@@ -30,7 +30,7 @@ public class TestView
     {
         this.sqlExecutor = sqlExecutor;
         this.name = namePrefix + "_" + randomTableSuffix();
-        sqlExecutor.execute(format("CREATE VIEW %s %s", name, definition));
+        sqlExecutor.execute(format("CREATE VIEW %s AS %s", name, definition));
     }
 
     public String getName()

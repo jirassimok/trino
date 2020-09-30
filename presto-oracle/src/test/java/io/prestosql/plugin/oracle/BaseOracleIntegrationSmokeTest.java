@@ -85,7 +85,7 @@ public abstract class BaseOracleIntegrationSmokeTest
     @Test
     public void testViews()
     {
-        try (TestView view = new TestView(onOracle(), getUser() + ".test_view", "AS SELECT 'O' as status FROM dual")) {
+        try (TestView view = new TestView(onOracle(), getUser() + ".test_view", "SELECT 'O' as status FROM dual")) {
             assertQuery("SELECT status FROM " + view.getName(), "SELECT 'O'");
         }
     }
