@@ -19,6 +19,7 @@ import io.prestosql.testing.AbstractTestIntegrationSmokeTest;
 import io.prestosql.testing.MaterializedResult;
 import io.prestosql.testing.sql.SqlExecutor;
 import io.prestosql.testing.sql.TestTable;
+import io.prestosql.testing.sql.TestView;
 import org.testng.annotations.Test;
 
 import static io.prestosql.plugin.oracle.TestingOracleServer.TEST_USER;

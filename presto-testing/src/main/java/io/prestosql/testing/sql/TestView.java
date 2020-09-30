@@ -11,9 +11,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.prestosql.plugin.oracle;
-
-import io.prestosql.testing.sql.SqlExecutor;
+package io.prestosql.testing.sql;
 
 import java.io.Closeable;
 
