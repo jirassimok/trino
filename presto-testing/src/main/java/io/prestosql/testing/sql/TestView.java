@@ -13,13 +13,11 @@
  */
 package io.prestosql.testing.sql;
 
-import java.io.Closeable;
-
 import static io.prestosql.testing.sql.TestTable.randomTableSuffix;
 import static java.lang.String.format;
 
 public class TestView
-        implements Closeable
+        implements AutoCloseable
 {
     private final SqlExecutor sqlExecutor;
     private final String name;
