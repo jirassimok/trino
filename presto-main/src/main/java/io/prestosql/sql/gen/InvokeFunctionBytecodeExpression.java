@@ -69,7 +69,13 @@ public class InvokeFunctionBytecodeExpression
     {
         super(type(Primitives.unwrap(type.getJavaType())));
 
-        this.invocation = generateInvocation(scope, functionMetadata, functionInvokerProvider, parameters.stream().map(BytecodeNode.class::cast).collect(toImmutableList()), binder);
+        this.invocation = generateInvocation(
+                scope,
+                functionMetadata,
+                type,
+                functionInvokerProvider,
+                parameters.stream().map(BytecodeNode.class::cast).collect(toImmutableList()),
+                binder);
         this.oneLineDescription = functionMetadata.getSignature().getName() + "(" + Joiner.on(", ").join(parameters) + ")";
     }
 

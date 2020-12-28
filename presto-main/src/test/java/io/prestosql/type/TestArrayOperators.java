@@ -62,6 +62,7 @@ import static io.prestosql.spi.type.SmallintType.SMALLINT;
 import static io.prestosql.spi.type.TimestampType.createTimestampType;
 import static io.prestosql.spi.type.TinyintType.TINYINT;
 import static io.prestosql.spi.type.VarcharType.VARCHAR;
+import static io.prestosql.spi.type.VarcharType.createUnboundedVarcharType;
 import static io.prestosql.spi.type.VarcharType.createVarcharType;
 import static io.prestosql.testing.DateTimeTestingUtils.sqlTimestampOf;
 import static io.prestosql.type.JsonType.JSON;
@@ -747,6 +748,23 @@ public class TestArrayOperators
         assertDecimalFunction("ARRAY [2.111111222111111114111, 2.22222222222222222, 2.222222222222223][3]", decimal("2.222222222222223000000"));
         assertDecimalFunction("ARRAY [1.9, 2, 2.3][3]", decimal("0000000002.3"));
         assertDecimalFunction("ARRAY [2.22222222222222222, 2.3][1]", decimal("2.22222222222222222"));
+    }
+
+    @Test
+    public void testSubscriptReturnType()
+    {
+        // Test return type of array subscript by passing it to another operation
+        // One test for each specialization of the operator
+        assertSubscriptCast("true", "true"); // boolean
+        assertSubscriptCast("1234", "1234"); // long
+        assertSubscriptCast("1.23", "1.23"); // double
+        assertSubscriptCast("IPADDRESS '127.0.0.1'", "127.0.0.1"); // slice
+        assertSubscriptCast("TIMESTAMP '1970-01-01 00:00:00.000000001'", "1970-01-01 00:00:00.000000001"); // object (LongTimestamp)
+    }
+
+    private void assertSubscriptCast(String literal, String expected)
+    {
+        assertFunction(format("CAST((ARRAY [%s])[1] AS VARCHAR)", literal), createUnboundedVarcharType(), expected);
     }
 
     @Test

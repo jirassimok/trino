@@ -181,6 +181,7 @@ public final class BytecodeUtils
         return generateInvocation(
                 scope,
                 metadata.getFunctionMetadata(resolvedFunction),
+                resolvedFunction.getSignature().getReturnType(),
                 invocationConvention -> metadata.getScalarFunctionInvoker(resolvedFunction, invocationConvention),
                 arguments,
                 binder);
@@ -189,6 +190,7 @@ public final class BytecodeUtils
     public static BytecodeNode generateInvocation(
             Scope scope,
             FunctionMetadata functionMetadata,
+            Type sqlReturnType,
             Function<InvocationConvention, FunctionInvoker> functionInvokerProvider,
             List<BytecodeNode> arguments,
             CallSiteBinder binder)
@@ -196,6 +198,7 @@ public final class BytecodeUtils
         return generateFullInvocation(
                 scope,
                 functionMetadata,
+                sqlReturnType,
                 functionInvokerProvider,
                 instanceFactory -> {
                     throw new IllegalArgumentException("Simple method invocation can not be used with functions that require an instance factory");
@@ -225,6 +228,7 @@ public final class BytecodeUtils
         return generateFullInvocation(
                 scope,
                 metadata.getFunctionMetadata(resolvedFunction),
+                resolvedFunction.getSignature().getReturnType(),
                 invocationConvention -> metadata.getScalarFunctionInvoker(resolvedFunction, invocationConvention),
                 instanceFactory,
                 argumentCompilers,
@@ -234,6 +238,7 @@ public final class BytecodeUtils
     public static BytecodeNode generateFullInvocation(
             Scope scope,
             FunctionMetadata functionMetadata,
+            Type sqlReturnType,
             Function<InvocationConvention, FunctionInvoker> functionInvokerProvider,
             Function<MethodHandle, BytecodeNode> instanceFactory,
             List<Function<Optional<Class<?>>, BytecodeNode>> argumentCompilers,
@@ -269,7 +274,7 @@ public final class BytecodeUtils
                 true);
         FunctionInvoker functionInvoker = functionInvokerProvider.apply(invocationConvention);
 
-        Binding binding = binder.bind(functionInvoker.getMethodHandle());
+        Binding binding = binder.bind(fixReturnedObjectType(functionInvoker.getMethodHandle(), sqlReturnType.getJavaType()));
 
         LabelNode end = new LabelNode("end");
         BytecodeBlock block = new BytecodeBlock()
@@ -353,6 +358,18 @@ public final class BytecodeUtils
         block.visitLabel(end);
 
         return block;
+    }
+
+    /**
+     * If the method handle's return type is {@code Object}, return a handle
+     * with the given return type. Otherwise, return the given handle.
+     */
+    private static MethodHandle fixReturnedObjectType(MethodHandle method, Class<?> objectType)
+    {
+        if (Object.class.equals(method.type().returnType())) {
+            return method.asType(method.type().changeReturnType(objectType));
+        }
+        return method;
     }
 
     public static BytecodeBlock unboxPrimitiveIfNecessary(Scope scope, Class<?> boxedType)
