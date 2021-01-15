@@ -474,7 +474,6 @@ public class TestHiveStorageFormats
 
     @Test(dataProvider = "storageFormatsWithNanosecondPrecision")
     public void testTimestampCreatedFromHive(StorageFormat storageFormat)
-            throws Exception
     {
         String tableName = createSimpleTimestampTable("timestamps_from_hive", storageFormat);
 
@@ -490,13 +489,11 @@ public class TestHiveStorageFormats
 
     @Test(dataProvider = "storageFormatsWithNanosecondPrecision")
     public void testTimestampCreatedFromTrino(StorageFormat storageFormat)
-            throws Exception
     {
         String tableName = createSimpleTimestampTable("timestamps_from_trino", storageFormat);
 
         for (TimestampAndPrecision entry : TIMESTAMPS_FROM_TRINO) {
-            // insert timestamps with different precisions
-            setSessionProperty(onPresto().getConnection(), "hive.timestamp_precision", entry.getPrecision().name());
+            setTimestampPrecision(entry.getPrecision());
             // insert records one by one so that we have one file per record, which allows us to exercise predicate push-down in Parquet
             // (which only works when the value range has a min = max)
             onPresto().executeQuery(format("INSERT INTO %s VALUES (%s, TIMESTAMP'%s')", tableName, entry.getId(), entry.getWriteValue()));
@@ -515,11 +512,10 @@ public class TestHiveStorageFormats
      * Assertions for tables created by {@link #createSimpleTimestampTable(String, StorageFormat)}
      */
     private static void assertSimpleTimestamps(String tableName, List<TimestampAndPrecision> data)
-            throws SQLException
     {
         for (TimestampAndPrecision entry : data) {
             for (HiveTimestampPrecision precision : HiveTimestampPrecision.values()) {
-                setSessionProperty(onPresto().getConnection(), "hive.timestamp_precision", precision.name());
+                setTimestampPrecision(precision);
                 // Assert also with `CAST AS varchar` on the server side to avoid any JDBC-related issues
                 assertThat(onPresto().executeQuery(
                         format("SELECT id, typeof(ts), CAST(ts AS varchar), ts FROM %s WHERE id = %s", tableName, entry.getId())))
@@ -535,7 +531,6 @@ public class TestHiveStorageFormats
 
     @Test(dataProvider = "storageFormatsWithNanosecondPrecision", groups = STORAGE_FORMATS)
     public void testStructTimestamps(StorageFormat format)
-            throws SQLException
     {
         setAdminRole(onPresto().getConnection());
         ensureDummyExists();
@@ -579,10 +574,9 @@ public class TestHiveStorageFormats
      * Assertions for tables created by {@link #createStructTimestampTable(String, StorageFormat)}
      */
     private void assertStructTimestamps(String tableName, Collection<TimestampAndPrecision> data)
-            throws SQLException
     {
         for (HiveTimestampPrecision precision : HiveTimestampPrecision.values()) {
-            setSessionProperty(onPresto().getConnection(), "hive.timestamp_precision", precision.name());
+            setTimestampPrecision(precision);
 
             // Check that the correct types are read
             String type = format("timestamp(%d)", precision.getPrecision());
@@ -706,6 +700,21 @@ public class TestHiveStorageFormats
         onHive().executeQuery("DROP TABLE IF EXISTS dummy");
         onHive().executeQuery("CREATE TABLE dummy (dummy varchar(1))");
         onHive().executeQuery("INSERT INTO dummy VALUES ('x')");
+    }
+
+    /**
+     * Set precision used when Trino reads and writes timestamps
+     *
+     * <p>(Hive always writes with nanosecond precision.)
+     */
+    private static void setTimestampPrecision(HiveTimestampPrecision readPrecision)
+    {
+        try {
+            setSessionProperty(onPresto().getConnection(), "hive.timestamp_precision", readPrecision.name());
+        }
+        catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private static void setSessionProperties(StorageFormat storageFormat)
