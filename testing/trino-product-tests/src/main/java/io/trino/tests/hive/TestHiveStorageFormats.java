@@ -476,8 +476,7 @@ public class TestHiveStorageFormats
     public void testTimestampCreatedFromHive(StorageFormat storageFormat)
             throws Exception
     {
-        String tableName = "test_timestamp_" + storageFormat.getName().toLowerCase(Locale.ENGLISH);
-        createSimpleTimestampTable(tableName, storageFormat);
+        String tableName = createSimpleTimestampTable("timestamps_from_hive", storageFormat);
 
         // insert records one by one so that we have one file per record, which allows us to exercise predicate push-down in Parquet
         // (which only works when the value range has a min = max)
@@ -485,15 +484,15 @@ public class TestHiveStorageFormats
             onHive().executeQuery(format("INSERT INTO %s VALUES (%s, '%s')", tableName, entry.getId(), entry.getWriteValue()));
         }
 
-        runTimestampQueries(tableName, TIMESTAMPS_FROM_HIVE);
+        assertSimpleTimestamps(tableName, TIMESTAMPS_FROM_HIVE);
+        onPresto().executeQuery("DROP TABLE " + tableName);
     }
 
     @Test(dataProvider = "storageFormatsWithNanosecondPrecision")
     public void testTimestampCreatedFromTrino(StorageFormat storageFormat)
             throws Exception
     {
-        String tableName = "test_timestamp_" + storageFormat.getName().toLowerCase(Locale.ENGLISH);
-        createSimpleTimestampTable(tableName, storageFormat);
+        String tableName = createSimpleTimestampTable("timestamps_from_trino", storageFormat);
 
         for (TimestampAndPrecision entry : TIMESTAMPS_FROM_TRINO) {
             // insert timestamps with different precisions
@@ -503,21 +502,19 @@ public class TestHiveStorageFormats
             onPresto().executeQuery(format("INSERT INTO %s VALUES (%s, TIMESTAMP'%s')", tableName, entry.getId(), entry.getWriteValue()));
         }
 
-        runTimestampQueries(tableName, TIMESTAMPS_FROM_TRINO);
+        assertSimpleTimestamps(tableName, TIMESTAMPS_FROM_TRINO);
+        onPresto().executeQuery("DROP TABLE " + tableName);
     }
 
-    private void createSimpleTimestampTable(String tableName, StorageFormat storageFormat)
+    private String createSimpleTimestampTable(String tableNamePrefix, StorageFormat format)
     {
-        // only admin user is allowed to change session properties
-        Connection connection = onPresto().getConnection();
-        setAdminRole(connection);
-        setSessionProperties(connection, storageFormat);
-
-        onPresto().executeQuery("DROP TABLE IF EXISTS " + tableName);
-        onPresto().executeQuery(format("CREATE TABLE %s (id BIGINT, ts TIMESTAMP) WITH (%s)", tableName, storageFormat.getStoragePropertiesAsSql()));
+        return createTestTable(tableNamePrefix, format, "(id BIGINT, ts TIMESTAMP)");
     }
 
-    private void runTimestampQueries(String tableName, List<TimestampAndPrecision> data)
+    /**
+     * Assertions for tables created by {@link #createSimpleTimestampTable(String, StorageFormat)}
+     */
+    private static void assertSimpleTimestamps(String tableName, List<TimestampAndPrecision> data)
             throws SQLException
     {
         for (TimestampAndPrecision entry : data) {
@@ -526,6 +523,7 @@ public class TestHiveStorageFormats
                 // Assert also with `CAST AS varchar` on the server side to avoid any JDBC-related issues
                 assertThat(onPresto().executeQuery(
                         format("SELECT id, typeof(ts), CAST(ts AS varchar), ts FROM %s WHERE id = %s", tableName, entry.getId())))
+                        .as("timestamp(%d)", precision.getPrecision())
                         .containsOnly(row(
                                 entry.getId(),
                                 entry.getReadType(precision),
@@ -533,7 +531,6 @@ public class TestHiveStorageFormats
                                 Timestamp.valueOf(entry.getReadValue(precision))));
             }
         }
-        onPresto().executeQuery("DROP TABLE " + tableName);
     }
 
     @Test(dataProvider = "storageFormatsWithNanosecondPrecision", groups = STORAGE_FORMATS)
@@ -568,23 +565,14 @@ public class TestHiveStorageFormats
 
     private String createStructTimestampTable(String tableNamePrefix, StorageFormat format)
     {
-        // only admin user is allowed to change session properties
-        setAdminRole(onPresto().getConnection());
-        setSessionProperties(onPresto().getConnection(), format);
-
-        String formatName = format.getName().toLowerCase(Locale.ENGLISH);
-        String tableName = format("%s_%s_%s", tableNamePrefix, formatName, randomTableSuffix());
-        onPresto().executeQuery(format(
-                "CREATE TABLE %s ("
-                        + "   id INTEGER,"
-                        + "   arr ARRAY(TIMESTAMP),"
-                        + "   map MAP(TIMESTAMP, TIMESTAMP),"
-                        + "   row ROW(col TIMESTAMP),"
-                        + "   nested ARRAY(MAP(TIMESTAMP, ROW(col ARRAY(TIMESTAMP))))"
-                        + ") WITH (%s)",
-                tableName,
-                format.getStoragePropertiesAsSql()));
-        return tableName;
+        return createTestTable(tableNamePrefix, format, ""
+                + "("
+                + "   id INTEGER,"
+                + "   arr ARRAY(TIMESTAMP),"
+                + "   map MAP(TIMESTAMP, TIMESTAMP),"
+                + "   row ROW(col TIMESTAMP),"
+                + "   nested ARRAY(MAP(TIMESTAMP, ROW(col ARRAY(TIMESTAMP))))"
+                + ")");
     }
 
     /**
@@ -659,6 +647,19 @@ public class TestHiveStorageFormats
                                     nCopies(6, Timestamp.valueOf(e.getReadValue(precision))).toArray())))
                             .collect(toList()));
         }
+    }
+
+    private String createTestTable(String tableNamePrefix, StorageFormat format, String sql)
+    {
+        // only admin user is allowed to change session properties
+        setAdminRole(onPresto().getConnection());
+        setSessionProperties(onPresto().getConnection(), format);
+
+        String formatName = format.getName().toLowerCase(Locale.ENGLISH);
+        String tableName = format("%s_%s_%s", tableNamePrefix, formatName, randomTableSuffix());
+        onPresto().executeQuery(
+                format("CREATE TABLE %s %s WITH (%s)", tableName, sql, format.getStoragePropertiesAsSql()));
+        return tableName;
     }
 
     /**
