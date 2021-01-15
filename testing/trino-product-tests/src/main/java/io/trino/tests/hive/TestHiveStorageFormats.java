@@ -23,6 +23,7 @@ import io.trino.tempto.query.QueryExecutor.QueryParam;
 import io.trino.tempto.query.QueryResult;
 import io.trino.tests.utils.JdbcDriverUtils;
 import org.assertj.core.api.SoftAssertions;
+import org.testng.SkipException;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
@@ -507,11 +508,11 @@ public class TestHiveStorageFormats
     }
 
     @Test(dataProvider = "storageFormatsWithNanosecondPrecision", groups = STORAGE_FORMATS)
-    public void testStructTimestamps(StorageFormat format)
+    public void testStructTimestampsFromHive(StorageFormat format)
     {
+        String tableName = createStructTimestampTable("hive_struct_timestamp", format);
         setAdminRole(onPresto().getConnection());
         ensureDummyExists();
-        String tableName = createStructTimestampTable("test_struct_timestamp_precision", format);
 
         // Insert one at a time because inserting with UNION ALL sometimes makes
         // data invisible to Trino (see https://github.com/trinodb/trino/issues/6485)
@@ -533,6 +534,35 @@ public class TestHiveStorageFormats
         }
 
         assertStructTimestamps(tableName, TIMESTAMPS_FROM_HIVE);
+        onHive().executeQuery(format("DROP TABLE %s", tableName));
+    }
+
+    @Test(dataProvider = "storageFormatsWithNanosecondPrecision", groups = STORAGE_FORMATS)
+    public void testStructTimestampsFromTrino(StorageFormat format)
+    {
+        String tableName = createStructTimestampTable("trino_struct_timestamp", format);
+        setAdminRole(onPresto().getConnection());
+
+        for (HiveTimestampPrecision precision : HiveTimestampPrecision.values()) {
+            setTimestampPrecision(precision);
+
+            onPresto().executeQuery(format(
+                    "INSERT INTO %s VALUES (%s)",
+                    tableName,
+                    TIMESTAMPS_FROM_TRINO.stream()
+                            .filter(t -> t.getPrecision() == precision)
+                            .map(entry -> format(
+                                    "%s,"
+                                            + " array[%2$s],"
+                                            + " map(array[%2$s], array[%2$s]),"
+                                            + " row(%2$s),"
+                                            + " array[map(array[%2$s], array[row(array[%2$s])])]",
+                                    entry.getId(),
+                                    format("TIMESTAMP '%s'", entry.getWriteValue())))
+                            .collect(Collectors.joining("), ("))));
+        }
+
+        assertStructTimestamps(tableName, TIMESTAMPS_FROM_TRINO);
         onHive().executeQuery(format("DROP TABLE %s", tableName));
     }
 
