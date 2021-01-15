@@ -22,6 +22,7 @@ import io.trino.tempto.assertions.QueryAssert.Row;
 import io.trino.tempto.query.QueryExecutor.QueryParam;
 import io.trino.tempto.query.QueryResult;
 import io.trino.tests.utils.JdbcDriverUtils;
+import org.assertj.core.api.SoftAssertions;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
@@ -513,20 +514,22 @@ public class TestHiveStorageFormats
      */
     private static void assertSimpleTimestamps(String tableName, List<TimestampAndPrecision> data)
     {
+        SoftAssertions softly = new SoftAssertions();
         for (TimestampAndPrecision entry : data) {
             for (HiveTimestampPrecision precision : HiveTimestampPrecision.values()) {
                 setTimestampPrecision(precision);
                 // Assert also with `CAST AS varchar` on the server side to avoid any JDBC-related issues
-                assertThat(onPresto().executeQuery(
+                softly.check(() -> assertThat(onPresto().executeQuery(
                         format("SELECT id, typeof(ts), CAST(ts AS varchar), ts FROM %s WHERE id = %s", tableName, entry.getId())))
                         .as("timestamp(%d)", precision.getPrecision())
                         .containsOnly(row(
                                 entry.getId(),
                                 entry.getReadType(precision),
                                 entry.getReadValue(precision),
-                                Timestamp.valueOf(entry.getReadValue(precision))));
+                                Timestamp.valueOf(entry.getReadValue(precision)))));
             }
         }
+        softly.assertAll();
     }
 
     @Test(dataProvider = "storageFormatsWithNanosecondPrecision", groups = STORAGE_FORMATS)
@@ -575,12 +578,13 @@ public class TestHiveStorageFormats
      */
     private void assertStructTimestamps(String tableName, Collection<TimestampAndPrecision> data)
     {
+        SoftAssertions softly = new SoftAssertions();
         for (HiveTimestampPrecision precision : HiveTimestampPrecision.values()) {
             setTimestampPrecision(precision);
 
             // Check that the correct types are read
             String type = format("timestamp(%d)", precision.getPrecision());
-            assertThat(onPresto()
+            softly.check(() -> assertThat(onPresto()
                     .executeQuery(format(
                             "SELECT"
                                     + "   typeof(arr),"
@@ -595,10 +599,10 @@ public class TestHiveStorageFormats
                             format("array(%s)", type),
                             format("map(%1$s, %1$s)", type),
                             format("row(col %s)", type),
-                            format("array(map(%1$s, row(col array(%1$s))))", type)));
+                            format("array(map(%1$s, row(col array(%1$s))))", type))));
 
             // Check the values as varchar
-            assertThat(onPresto()
+            softly.check(() -> assertThat(onPresto()
                     .executeQuery(format(
                             "SELECT"
                                     + "   id,"
@@ -617,10 +621,10 @@ public class TestHiveStorageFormats
                             .map(e -> new Row(Lists.asList(
                                     e.getId(),
                                     nCopies(6, e.getReadValue(precision)).toArray())))
-                            .collect(toList()));
+                            .collect(toList())));
 
             // Check the values directly
-            assertThat(onPresto()
+            softly.check(() -> assertThat(onPresto()
                     .executeQuery(format(
                             "SELECT"
                                     + "   id,"
@@ -639,8 +643,9 @@ public class TestHiveStorageFormats
                             .map(e -> new Row(Lists.asList(
                                     e.getId(),
                                     nCopies(6, Timestamp.valueOf(e.getReadValue(precision))).toArray())))
-                            .collect(toList()));
+                            .collect(toList())));
         }
+        softly.assertAll();
     }
 
     private String createTestTable(String tableNamePrefix, StorageFormat format, String sql)
