@@ -32,6 +32,7 @@ import java.sql.JDBCType;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -541,19 +542,7 @@ public class TestHiveStorageFormats
     {
         setAdminRole(onPresto().getConnection());
         ensureDummyExists();
-
-        String tableName = format("test_struct_timestamp_precision_%s_%s", format.getName().toLowerCase(Locale.ENGLISH), randomTableSuffix());
-
-        onPresto().executeQuery(format(
-                "CREATE TABLE %s ("
-                        + "   id INTEGER,"
-                        + "   arr ARRAY(TIMESTAMP),"
-                        + "   map MAP(TIMESTAMP, TIMESTAMP),"
-                        + "   row ROW(col TIMESTAMP),"
-                        + "   nested ARRAY(MAP(TIMESTAMP, ROW(col ARRAY(TIMESTAMP))))"
-                        + ") WITH (%s)",
-                tableName,
-                format.getStoragePropertiesAsSql()));
+        String tableName = createStructTimestampTable("test_struct_timestamp_precision", format);
 
         // Insert in a loop because inserting with UNION ALL sometimes makes values invisible to Presto
         for (TimestampAndPrecision entry : TIMESTAMPS_FROM_HIVE) {
@@ -573,11 +562,38 @@ public class TestHiveStorageFormats
                     entry.getId()));
         }
 
+        assertStructTimestamps(tableName, TIMESTAMPS_FROM_HIVE);
+        onHive().executeQuery(format("DROP TABLE %s", tableName));
+    }
+
+    private String createStructTimestampTable(String tableNamePrefix, StorageFormat format)
+    {
+        String formatName = format.getName().toLowerCase(Locale.ENGLISH);
+        String tableName = format("%s_%s_%s", tableNamePrefix, formatName, randomTableSuffix());
+        onPresto().executeQuery(format(
+                "CREATE TABLE %s ("
+                        + "   id INTEGER,"
+                        + "   arr ARRAY(TIMESTAMP),"
+                        + "   map MAP(TIMESTAMP, TIMESTAMP),"
+                        + "   row ROW(col TIMESTAMP),"
+                        + "   nested ARRAY(MAP(TIMESTAMP, ROW(col ARRAY(TIMESTAMP))))"
+                        + ") WITH (%s)",
+                tableName,
+                format.getStoragePropertiesAsSql()));
+        return tableName;
+    }
+
+    /**
+     * Assertions for tables created by {@link #createStructTimestampTable(String, StorageFormat)}
+     */
+    private void assertStructTimestamps(String tableName, Collection<TimestampAndPrecision> data)
+            throws SQLException
+    {
         for (HiveTimestampPrecision precision : HiveTimestampPrecision.values()) {
             setSessionProperty(onPresto().getConnection(), "hive.timestamp_precision", precision.name());
 
             // Check that the correct types are read
-            String type = TIMESTAMPS_FROM_HIVE.get(0).getReadType(precision);
+            String type = format("timestamp(%d)", precision.getPrecision());
             assertThat(onPresto()
                     .executeQuery(format(
                             "SELECT"
@@ -588,7 +604,7 @@ public class TestHiveStorageFormats
                                     + " FROM %s"
                                     + " LIMIT 1",
                             tableName)))
-                    .as("timestamp container types on %s", format.getName().toLowerCase(Locale.ENGLISH))
+                    .as("timestamp container types")
                     .containsOnly(row(
                             format("array(%s)", type),
                             format("map(%1$s, %1$s)", type),
@@ -609,15 +625,15 @@ public class TestHiveStorageFormats
                                     + " FROM %s"
                                     + " ORDER BY id",
                             tableName)))
-                    .as("timestamp containers on %s", format.getName().toLowerCase(Locale.ENGLISH))
-                    .containsExactly(TIMESTAMPS_FROM_HIVE.stream()
+                    .as("timestamp containers as varchar")
+                    .containsExactlyInOrder(data.stream()
                             .sorted(comparingInt(TimestampAndPrecision::getId))
                             .map(e -> new Row(Lists.asList(
                                     e.getId(),
                                     nCopies(6, e.getReadValue(precision)).toArray())))
                             .collect(toList()));
 
-            // Check the values
+            // Check the values directly
             assertThat(onPresto()
                     .executeQuery(format(
                             "SELECT"
@@ -631,16 +647,14 @@ public class TestHiveStorageFormats
                                     + " FROM %s"
                                     + " ORDER BY id",
                             tableName)))
-                    .as("timestamp containers on %s", format.getName().toLowerCase(Locale.ENGLISH))
-                    .containsExactly(TIMESTAMPS_FROM_HIVE.stream()
+                    .as("timestamp containers")
+                    .containsExactlyInOrder(data.stream()
                             .sorted(comparingInt(TimestampAndPrecision::getId))
                             .map(e -> new Row(Lists.asList(
                                     e.getId(),
                                     nCopies(6, Timestamp.valueOf(e.getReadValue(precision))).toArray())))
                             .collect(toList()));
         }
-
-        onHive().executeQuery(format("DROP TABLE %s", tableName));
     }
 
     /**
