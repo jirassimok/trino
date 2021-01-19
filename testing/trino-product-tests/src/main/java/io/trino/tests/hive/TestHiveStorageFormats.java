@@ -149,7 +149,7 @@ public class TestHiveStorageFormats
                     "2027-12-31 23:59:59.999999499"));
 
     // These check that values are correctly rounded on insertion
-    private static final List<TimestampAndPrecision> TIMESTAMPS_FROM_PRESTO = List.of(
+    private static final List<TimestampAndPrecision> TIMESTAMPS_FROM_TRINO = List.of(
             timestampAndPrecision(
                     "2020-01-02 12:01:00.999", // millis as millis (no rounding)
                     MILLISECONDS,
@@ -489,13 +489,13 @@ public class TestHiveStorageFormats
     }
 
     @Test(dataProvider = "storageFormatsWithNanosecondPrecision")
-    public void testTimestampCreatedFromPresto(StorageFormat storageFormat)
+    public void testTimestampCreatedFromTrino(StorageFormat storageFormat)
             throws Exception
     {
         String tableName = "test_timestamp_" + storageFormat.getName().toLowerCase(Locale.ENGLISH);
         createSimpleTimestampTable(tableName, storageFormat);
 
-        for (TimestampAndPrecision entry : TIMESTAMPS_FROM_PRESTO) {
+        for (TimestampAndPrecision entry : TIMESTAMPS_FROM_TRINO) {
             // insert timestamps with different precisions
             setSessionProperty(onPresto().getConnection(), "hive.timestamp_precision", entry.getPrecision().name());
             // insert records one by one so that we have one file per record, which allows us to exercise predicate push-down in Parquet
@@ -503,7 +503,7 @@ public class TestHiveStorageFormats
             onPresto().executeQuery(format("INSERT INTO %s VALUES (%s, TIMESTAMP'%s')", tableName, entry.getId(), entry.getWriteValue()));
         }
 
-        runTimestampQueries(tableName, TIMESTAMPS_FROM_PRESTO);
+        runTimestampQueries(tableName, TIMESTAMPS_FROM_TRINO);
     }
 
     private void createSimpleTimestampTable(String tableName, StorageFormat storageFormat)
@@ -544,7 +544,7 @@ public class TestHiveStorageFormats
         ensureDummyExists();
         String tableName = createStructTimestampTable("test_struct_timestamp_precision", format);
 
-        // Insert in a loop because inserting with UNION ALL sometimes makes values invisible to Presto
+        // Insert in a loop because inserting with UNION ALL sometimes makes values invisible to Trino
         for (TimestampAndPrecision entry : TIMESTAMPS_FROM_HIVE) {
             onHive().executeQuery(format(
                     "INSERT INTO %1$s"
