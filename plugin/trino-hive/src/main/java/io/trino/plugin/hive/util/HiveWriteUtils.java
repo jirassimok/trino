@@ -293,7 +293,7 @@ public final class HiveWriteUtils
         return partitionValues.build();
     }
 
-    public static Object getField(Type type, Block block, int position)
+    private static Object getField(Type type, Block block, int position)
     {
         return getField(DateTimeZone.UTC, type, block, position);
     }
@@ -724,7 +724,7 @@ public final class HiveWriteUtils
         throw new IllegalArgumentException("unsupported type: " + type);
     }
 
-    public static HiveDecimal getHiveDecimal(DecimalType decimalType, Block block, int position)
+    private static HiveDecimal getHiveDecimal(DecimalType decimalType, Block block, int position)
     {
         BigInteger unscaledValue;
         if (decimalType.isShort()) {

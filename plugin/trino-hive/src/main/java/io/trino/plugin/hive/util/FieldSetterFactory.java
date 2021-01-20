@@ -16,16 +16,22 @@ package io.trino.plugin.hive.util;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Shorts;
 import com.google.common.primitives.SignedBytes;
+import io.trino.plugin.hive.HiveTimestampPrecision;
+import io.trino.spi.StandardErrorCode;
+import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.DecimalType;
+import io.trino.spi.type.Decimals;
 import io.trino.spi.type.LongTimestamp;
 import io.trino.spi.type.MapType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
+import org.apache.hadoop.hive.common.type.Date;
+import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.common.type.Timestamp;
 import org.apache.hadoop.hive.serde2.io.DateWritableV2;
 import org.apache.hadoop.hive.serde2.io.DoubleWritable;
@@ -43,23 +49,27 @@ import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.joda.time.DateTimeZone;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static io.trino.plugin.hive.util.HiveWriteUtils.getField;
-import static io.trino.plugin.hive.util.HiveWriteUtils.getHiveDecimal;
+import static com.google.common.base.Verify.verify;
+import static io.trino.plugin.hive.util.HiveUtil.checkCondition;
+import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
+import static io.trino.spi.type.Chars.padSpaces;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
+import static io.trino.spi.type.Timestamps.MICROSECONDS_PER_MILLISECOND;
 import static io.trino.spi.type.Timestamps.MICROSECONDS_PER_SECOND;
 import static io.trino.spi.type.Timestamps.MILLISECONDS_PER_SECOND;
-import static io.trino.spi.type.Timestamps.PICOSECONDS_PER_MICROSECOND;
+import static io.trino.spi.type.Timestamps.NANOSECONDS_PER_MICROSECOND;
 import static io.trino.spi.type.Timestamps.PICOSECONDS_PER_NANOSECOND;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
@@ -67,11 +77,18 @@ import static java.lang.Float.intBitsToFloat;
 import static java.lang.Math.floorDiv;
 import static java.lang.Math.floorMod;
 import static java.lang.Math.toIntExact;
+import static java.util.Collections.unmodifiableList;
+import static java.util.Collections.unmodifiableMap;
 import static java.util.Objects.requireNonNull;
 
 public final class FieldSetterFactory
 {
     private final DateTimeZone timeZone;
+
+    public FieldSetterFactory()
+    {
+        this(DateTimeZone.UTC);
+    }
 
     public FieldSetterFactory(DateTimeZone timeZone)
     {
@@ -114,7 +131,7 @@ public final class FieldSetterFactory
             return new DateFieldSetter(rowInspector, row, field);
         }
         if (type instanceof TimestampType) {
-            return new TimestampFieldSetter(rowInspector, row, field, (TimestampType) type, timeZone);
+            return new TimestampFieldSetter(rowInspector, row, field, (TimestampType) type);
         }
         if (type instanceof DecimalType) {
             DecimalType decimalType = (DecimalType) type;
@@ -351,52 +368,23 @@ public final class FieldSetterFactory
         }
     }
 
-    private static class TimestampFieldSetter
+    private class TimestampFieldSetter
             extends FieldSetter
     {
-        private final DateTimeZone timeZone;
         private final TimestampType type;
         private final TimestampWritableV2 value = new TimestampWritableV2();
 
-        public TimestampFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field, TimestampType type, DateTimeZone timeZone)
+        public TimestampFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field, TimestampType type)
         {
             super(rowInspector, row, field);
             this.type = requireNonNull(type, "type is null");
-            this.timeZone = requireNonNull(timeZone, "timeZone is null");
         }
 
         @Override
         public void setField(Block block, int position)
         {
-            long epochMicros;
-            int picosOfMicro;
-            if (type.isShort()) {
-                epochMicros = type.getLong(block, position);
-                picosOfMicro = 0;
-            }
-            else {
-                LongTimestamp longTimestamp = (LongTimestamp) type.getObject(block, position);
-                epochMicros = longTimestamp.getEpochMicros();
-                picosOfMicro = longTimestamp.getPicosOfMicro();
-            }
-
-            long epochSeconds = floorDiv(epochMicros, MICROSECONDS_PER_SECOND);
-            long picosOfSecond = (long) floorMod(epochMicros, MICROSECONDS_PER_SECOND) * PICOSECONDS_PER_MICROSECOND + picosOfMicro;
-
-            epochSeconds = convertLocalEpochSecondsToUtc(epochSeconds);
-            // no rounding since the the data has nanosecond precision, at most
-            int nanosOfSecond = toIntExact(picosOfSecond / PICOSECONDS_PER_NANOSECOND);
-
-            Timestamp timestamp = Timestamp.ofEpochSecond(epochSeconds, nanosOfSecond);
-            value.set(timestamp);
+            value.set(getHiveTimestamp(type, block, position));
             rowInspector.setStructFieldData(row, field, value);
-        }
-
-        private long convertLocalEpochSecondsToUtc(long epochSeconds)
-        {
-            long epochMillis = epochSeconds * MILLISECONDS_PER_SECOND;
-            epochMillis = timeZone.convertLocalToUTC(epochMillis, false);
-            return epochMillis / MILLISECONDS_PER_SECOND;
         }
     }
 
@@ -438,7 +426,7 @@ public final class FieldSetterFactory
 
             List<Object> list = new ArrayList<>(arrayBlock.getPositionCount());
             for (int i = 0; i < arrayBlock.getPositionCount(); i++) {
-                list.add(getField(timeZone, elementType, arrayBlock, i));
+                list.add(getField(elementType, arrayBlock, i));
             }
 
             rowInspector.setStructFieldData(row, field, list);
@@ -465,8 +453,8 @@ public final class FieldSetterFactory
             Map<Object, Object> map = new HashMap<>(mapBlock.getPositionCount() * 2);
             for (int i = 0; i < mapBlock.getPositionCount(); i += 2) {
                 map.put(
-                        getField(timeZone, keyType, mapBlock, i),
-                        getField(timeZone, valueType, mapBlock, i + 1));
+                        getField(keyType, mapBlock, i),
+                        getField(valueType, mapBlock, i + 1));
             }
 
             rowInspector.setStructFieldData(row, field, map);
@@ -495,10 +483,139 @@ public final class FieldSetterFactory
             // (multiple blocks vs all fields packed in a single block)
             List<Object> value = new ArrayList<>(fieldTypes.size());
             for (int i = 0; i < fieldTypes.size(); i++) {
-                value.add(getField(timeZone, fieldTypes.get(i), rowBlock, i));
+                value.add(getField(fieldTypes.get(i), rowBlock, i));
             }
 
             rowInspector.setStructFieldData(row, field, value);
         }
+    }
+
+    private Object getField(Type type, Block block, int position)
+    {
+        if (block.isNull(position)) {
+            return null;
+        }
+        if (BOOLEAN.equals(type)) {
+            return type.getBoolean(block, position);
+        }
+        if (BIGINT.equals(type)) {
+            return type.getLong(block, position);
+        }
+        if (INTEGER.equals(type)) {
+            return toIntExact(type.getLong(block, position));
+        }
+        if (SMALLINT.equals(type)) {
+            return Shorts.checkedCast(type.getLong(block, position));
+        }
+        if (TINYINT.equals(type)) {
+            return SignedBytes.checkedCast(type.getLong(block, position));
+        }
+        if (REAL.equals(type)) {
+            return intBitsToFloat((int) type.getLong(block, position));
+        }
+        if (DOUBLE.equals(type)) {
+            return type.getDouble(block, position);
+        }
+        if (type instanceof VarcharType) {
+            return new Text(type.getSlice(block, position).getBytes());
+        }
+        if (type instanceof CharType) {
+            CharType charType = (CharType) type;
+            return new Text(padSpaces(type.getSlice(block, position), charType).toStringUtf8());
+        }
+        if (VARBINARY.equals(type)) {
+            return type.getSlice(block, position).getBytes();
+        }
+        if (DATE.equals(type)) {
+            return Date.ofEpochDay(toIntExact(type.getLong(block, position)));
+        }
+        if (type instanceof TimestampType) {
+            return getHiveTimestamp((TimestampType) type, block, position);
+        }
+        if (type instanceof DecimalType) {
+            DecimalType decimalType = (DecimalType) type;
+            return getHiveDecimal(decimalType, block, position);
+        }
+        if (type instanceof ArrayType) {
+            Type elementType = ((ArrayType) type).getElementType();
+            Block arrayBlock = block.getObject(position, Block.class);
+
+            List<Object> list = new ArrayList<>(arrayBlock.getPositionCount());
+            for (int i = 0; i < arrayBlock.getPositionCount(); i++) {
+                list.add(getField(elementType, arrayBlock, i));
+            }
+            return unmodifiableList(list);
+        }
+        if (type instanceof MapType) {
+            Type keyType = ((MapType) type).getKeyType();
+            Type valueType = ((MapType) type).getValueType();
+            Block mapBlock = block.getObject(position, Block.class);
+
+            Map<Object, Object> map = new HashMap<>();
+            for (int i = 0; i < mapBlock.getPositionCount(); i += 2) {
+                map.put(
+                        getField(keyType, mapBlock, i),
+                        getField(valueType, mapBlock, i + 1));
+            }
+            return unmodifiableMap(map);
+        }
+        if (type instanceof RowType) {
+            List<Type> fieldTypes = type.getTypeParameters();
+            Block rowBlock = block.getObject(position, Block.class);
+            checkCondition(
+                    fieldTypes.size() == rowBlock.getPositionCount(),
+                    StandardErrorCode.GENERIC_INTERNAL_ERROR,
+                    "Expected row value field count does not match type field count");
+            List<Object> row = new ArrayList<>(rowBlock.getPositionCount());
+            for (int i = 0; i < rowBlock.getPositionCount(); i++) {
+                row.add(getField(fieldTypes.get(i), rowBlock, i));
+            }
+            return unmodifiableList(row);
+        }
+        throw new TrinoException(NOT_SUPPORTED, "unsupported type: " + type);
+    }
+
+    private static HiveDecimal getHiveDecimal(DecimalType decimalType, Block block, int position)
+    {
+        BigInteger unscaledValue;
+        if (decimalType.isShort()) {
+            unscaledValue = BigInteger.valueOf(decimalType.getLong(block, position));
+        }
+        else {
+            unscaledValue = Decimals.decodeUnscaledValue(decimalType.getSlice(block, position));
+        }
+        return HiveDecimal.create(unscaledValue, decimalType.getScale());
+    }
+
+    private Timestamp getHiveTimestamp(TimestampType type, Block block, int position)
+    {
+        verify(type.getPrecision() <= HiveTimestampPrecision.MAX.getPrecision(), "Timestamp precision too high for Hive");
+
+        long epochMicro;
+        int nanoOfMicro;
+        if (type.isShort()) {
+            epochMicro = type.getLong(block, position);
+            nanoOfMicro = 0;
+        }
+        else {
+            LongTimestamp timestamp = (LongTimestamp) type.getObject(block, position);
+            epochMicro = timestamp.getEpochMicros();
+            nanoOfMicro = timestamp.getPicosOfMicro() / PICOSECONDS_PER_NANOSECOND;
+        }
+
+        long epochSecond;
+        if (DateTimeZone.UTC.equals(timeZone)) {
+            epochSecond = floorDiv(epochMicro, MICROSECONDS_PER_SECOND);
+        }
+        else {
+            long localEpochMilli = floorDiv(epochMicro, MICROSECONDS_PER_MILLISECOND);
+            long utcEpochMilli = timeZone.convertLocalToUTC(localEpochMilli, false);
+            epochSecond = floorDiv(utcEpochMilli, MILLISECONDS_PER_SECOND);
+        }
+
+        int microOfSecond = floorMod(epochMicro, MICROSECONDS_PER_SECOND);
+        int nanoOfSecond = microOfSecond * NANOSECONDS_PER_MICROSECOND + nanoOfMicro;
+
+        return Timestamp.ofEpochSecond(epochSecond, nanoOfSecond);
     }
 }
