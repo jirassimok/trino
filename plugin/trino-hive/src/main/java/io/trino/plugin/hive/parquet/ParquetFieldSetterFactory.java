@@ -25,14 +25,11 @@ import org.apache.hadoop.hive.serde2.objectinspector.SettableStructObjectInspect
 import org.apache.hadoop.hive.serde2.objectinspector.StructField;
 import org.joda.time.DateTimeZone;
 
-import java.time.ZoneOffset;
-
 import static com.google.common.base.Verify.verify;
 import static io.trino.spi.type.Timestamps.MICROSECONDS_PER_MILLISECOND;
 import static io.trino.spi.type.Timestamps.MICROSECONDS_PER_SECOND;
 import static io.trino.spi.type.Timestamps.MILLISECONDS_PER_SECOND;
 import static io.trino.spi.type.Timestamps.NANOSECONDS_PER_MICROSECOND;
-import static io.trino.spi.type.Timestamps.NANOSECONDS_PER_MILLISECOND;
 import static io.trino.spi.type.Timestamps.PICOSECONDS_PER_NANOSECOND;
 import static java.lang.Math.floorDiv;
 import static java.lang.Math.floorMod;
@@ -57,6 +54,15 @@ public class ParquetFieldSetterFactory
         return super.create(rowInspector, row, field, type);
     }
 
+    @Override
+    protected Object getField(Type type, Block block, int position)
+    {
+        if (type instanceof TimestampType) {
+            return getHiveTimestamp((TimestampType) type, block, position);
+        }
+        return super.getField(type, block, position);
+    }
+
     private class TimestampFieldSetter
             extends FieldSetter
     {
@@ -74,26 +80,31 @@ public class ParquetFieldSetterFactory
         @Override
         public void setField(Block block, int position)
         {
-            long localEpochMicro;
-            int nanoOfMicro;
-            if (type.isShort()) {
-                localEpochMicro = type.getLong(block, position);
-                nanoOfMicro = 0;
-            }
-            else {
-                LongTimestamp longTimestamp = (LongTimestamp) type.getObject(block, position);
-                localEpochMicro = longTimestamp.getEpochMicros();
-                nanoOfMicro = longTimestamp.getPicosOfMicro() / PICOSECONDS_PER_NANOSECOND;
-            }
-            int microOfSecond = floorMod(localEpochMicro, MICROSECONDS_PER_SECOND);
-            int nanoOfSecond = microOfSecond * NANOSECONDS_PER_MICROSECOND + nanoOfMicro;
-
-            long localEpochMilli = floorDiv(localEpochMicro, MICROSECONDS_PER_MILLISECOND);
-            long utcEpochMilli = timeZone.convertLocalToUTC(localEpochMilli, false);
-            long utcEpochSecond = floorDiv(utcEpochMilli, MILLISECONDS_PER_SECOND);
-
-            value.set(Timestamp.ofEpochSecond(utcEpochSecond, nanoOfSecond));
+            value.set(getHiveTimestamp(type, block, position));
             rowInspector.setStructFieldData(row, field, value);
         }
+    }
+
+    private Timestamp getHiveTimestamp(TimestampType type, Block block, int position)
+    {
+        long localEpochMicro;
+        int nanoOfMicro;
+        if (type.isShort()) {
+            localEpochMicro = type.getLong(block, position);
+            nanoOfMicro = 0;
+        }
+        else {
+            LongTimestamp longTimestamp = (LongTimestamp) type.getObject(block, position);
+            localEpochMicro = longTimestamp.getEpochMicros();
+            nanoOfMicro = longTimestamp.getPicosOfMicro() / PICOSECONDS_PER_NANOSECOND;
+        }
+        int microOfSecond = floorMod(localEpochMicro, MICROSECONDS_PER_SECOND);
+        int nanoOfSecond = microOfSecond * NANOSECONDS_PER_MICROSECOND + nanoOfMicro;
+
+        long localEpochMilli = floorDiv(localEpochMicro, MICROSECONDS_PER_MILLISECOND);
+        long utcEpochMilli = timeZone.convertLocalToUTC(localEpochMilli, false);
+        long utcEpochSecond = floorDiv(utcEpochMilli, MILLISECONDS_PER_SECOND);
+
+        return Timestamp.ofEpochSecond(utcEpochSecond, nanoOfSecond);
     }
 }

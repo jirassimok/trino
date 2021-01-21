@@ -475,7 +475,7 @@ public class FieldSetterFactory
         }
     }
 
-    private Object getField(Type type, Block block, int position)
+    protected Object getField(Type type, Block block, int position)
     {
         if (block.isNull(position)) {
             return null;
