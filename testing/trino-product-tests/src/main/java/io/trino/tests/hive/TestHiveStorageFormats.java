@@ -19,6 +19,7 @@ import com.google.inject.Inject;
 import io.trino.plugin.hive.HiveTimestampPrecision;
 import io.trino.tempto.ProductTest;
 import io.trino.tempto.assertions.QueryAssert.Row;
+import io.trino.tempto.query.QueryExecutor;
 import io.trino.tempto.query.QueryExecutor.QueryParam;
 import io.trino.tempto.query.QueryResult;
 import io.trino.testng.services.Flaky;
@@ -30,6 +31,7 @@ import org.testng.annotations.Test;
 import javax.inject.Named;
 
 import java.sql.Connection;
+import java.sql.Date;
 import java.sql.JDBCType;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -61,6 +63,7 @@ import static io.trino.tests.utils.JdbcDriverUtils.setSessionProperty;
 import static io.trino.tests.utils.QueryExecutors.onHive;
 import static io.trino.tests.utils.QueryExecutors.onPresto;
 import static java.lang.String.format;
+import static java.lang.String.join;
 import static java.util.Collections.nCopies;
 import static java.util.Comparator.comparingInt;
 import static java.util.Objects.requireNonNull;
@@ -380,7 +383,7 @@ public class TestHiveStorageFormats
         Row[] storedValues = Arrays.stream(values).map(Row::row).toArray(Row[]::new);
         storedValues[0] = row((Object) null); // if you put in the null format, it saves as null
 
-        String placeholders = String.join(", ", nCopies(values.length, "(?)"));
+        String placeholders = join(", ", nCopies(values.length, "(?)"));
         query(
                 format("INSERT INTO %s VALUES %s", tableName, placeholders),
                 Arrays.stream(values)
@@ -478,6 +481,47 @@ public class TestHiveStorageFormats
         assertThat(query("SELECT * FROM " + tableName)).containsExactly(row(1, "test data"));
 
         onHive().executeQuery("DROP TABLE " + tableName);
+    }
+
+    // TODO: Where do these tests belong? I'm not sure this is the right class.
+    @Test(dataProvider = "storageFormats")
+    public void testDatesFromHive(StorageFormat format)
+    {
+        runDateTests("dates_from_hive", format, onHive());
+    }
+
+    @Test(dataProvider = "storageFormats")
+    public void testDatesFromTrino(StorageFormat format)
+    {
+        runDateTests("dates_from_trino", format, onPresto());
+    }
+
+    private void runDateTests(String tableNamePrefix, StorageFormat format, QueryExecutor inserter)
+    {
+        String formatName = format.getName().toLowerCase(Locale.ENGLISH);
+        String tableName = format("%s_%s_%s", tableNamePrefix, formatName, randomTableSuffix());
+        onPresto().executeQuery(format(
+                "CREATE TABLE %s (x date) WITH (%s)",
+                tableName,
+                format.getStoragePropertiesAsSql()));
+
+        // 1970-01-01 omitted to avoid issues with America/Bahia_Banderas
+        // TODO: Is this only a local testing issue?
+        String[] dates = {"1960-12-31", "2000-01-01", "2020-11-03"};
+
+        inserter.executeQuery(
+                format("INSERT INTO %s VALUES (DATE '%s')", tableName, join("'), (DATE '", dates)));
+
+        assertThat(onPresto().executeQuery("SELECT CAST(x AS VARCHAR) FROM " + tableName))
+                .containsOnly(Arrays.stream(dates).map(Row::row).collect(toList()));
+
+        assertThat(onPresto().executeQuery("SELECT x FROM " + tableName))
+                .containsOnly(Arrays.stream(dates)
+                        .map(Date::valueOf)
+                        .map(Row::row)
+                        .collect(toList()));
+
+        onPresto().executeQuery("DROP TABLE " + tableName);
     }
 
     @Test(dataProvider = "storageFormatsWithNanosecondPrecision")
