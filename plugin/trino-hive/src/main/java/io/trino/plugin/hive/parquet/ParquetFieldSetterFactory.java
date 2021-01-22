@@ -21,8 +21,6 @@ import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.Type;
 import org.apache.hadoop.hive.common.type.Timestamp;
 import org.apache.hadoop.hive.serde2.io.TimestampWritableV2;
-import org.apache.hadoop.hive.serde2.objectinspector.SettableStructObjectInspector;
-import org.apache.hadoop.hive.serde2.objectinspector.StructField;
 import org.joda.time.DateTimeZone;
 
 import static com.google.common.base.Verify.verify;
@@ -46,12 +44,12 @@ public class ParquetFieldSetterFactory
     }
 
     @Override
-    public FieldSetter create(SettableStructObjectInspector rowInspector, Object row, StructField field, Type type)
+    protected FieldTranslator<?> getFieldTranslator(Type type)
     {
         if (type instanceof TimestampType) {
-            return new TimestampFieldSetter(rowInspector, row, field, (TimestampType) type);
+            return new TimestampFieldTranslator((TimestampType) type);
         }
-        return super.create(rowInspector, row, field, type);
+        return super.getFieldTranslator(type);
     }
 
     @Override
@@ -63,25 +61,23 @@ public class ParquetFieldSetterFactory
         return super.getField(type, block, position);
     }
 
-    private class TimestampFieldSetter
-            extends FieldSetter
+    private class TimestampFieldTranslator
+            extends StatefulFieldTranslator<TimestampWritableV2>
     {
         private final TimestampType type;
-        private final TimestampWritableV2 value = new TimestampWritableV2();
 
-        public TimestampFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field, TimestampType type)
+        public TimestampFieldTranslator(TimestampType type)
         {
-            super(rowInspector, row, field);
+            super(new TimestampWritableV2());
             this.type = requireNonNull(type, "type is null");
 
             verify(type.getPrecision() <= HiveTimestampPrecision.MAX.getPrecision(), "Timestamp precision too high for Hive");
         }
 
         @Override
-        public void setField(Block block, int position)
+        public void setValue(Block block, int position)
         {
-            value.set(getHiveTimestamp(type, block, position));
-            rowInspector.setStructFieldData(row, field, value);
+            state.set(getHiveTimestamp(type, block, position));
         }
     }
 

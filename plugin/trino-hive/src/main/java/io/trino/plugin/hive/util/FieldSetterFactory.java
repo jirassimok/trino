@@ -13,7 +13,6 @@
  */
 package io.trino.plugin.hive.util;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Shorts;
 import com.google.common.primitives.SignedBytes;
 import io.trino.plugin.hive.HiveTimestampPrecision;
@@ -82,383 +81,401 @@ public class FieldSetterFactory
 {
     public FieldSetter create(SettableStructObjectInspector rowInspector, Object row, StructField field, Type type)
     {
+        return new TranslatingFieldSetter(rowInspector, row, field, getFieldTranslator(type));
+    }
+
+    protected FieldTranslator<?> getFieldTranslator(Type type)
+    {
         if (BOOLEAN.equals(type)) {
-            return new BooleanFieldSetter(rowInspector, row, field);
+            return new BooleanFieldTranslator();
         }
         if (BIGINT.equals(type)) {
-            return new BigintFieldSetter(rowInspector, row, field);
+            return new BigintFieldTranslator();
         }
         if (INTEGER.equals(type)) {
-            return new IntFieldSetter(rowInspector, row, field);
+            return new IntFieldTranslator();
         }
         if (SMALLINT.equals(type)) {
-            return new SmallintFieldSetter(rowInspector, row, field);
+            return new SmallintFieldTranslator();
         }
         if (TINYINT.equals(type)) {
-            return new TinyintFieldSetter(rowInspector, row, field);
+            return new TinyintFieldTranslator();
         }
         if (REAL.equals(type)) {
-            return new FloatFieldSetter(rowInspector, row, field);
+            return new FloatFieldTranslator();
         }
         if (DOUBLE.equals(type)) {
-            return new DoubleFieldSetter(rowInspector, row, field);
+            return new DoubleFieldTranslator();
         }
         if (type instanceof VarcharType) {
-            return new VarcharFieldSetter(rowInspector, row, field, type);
+            return new VarcharFieldTranslator(type);
         }
         if (type instanceof CharType) {
-            return new CharFieldSetter(rowInspector, row, field, type);
+            return new CharFieldTranslator(type);
         }
         if (VARBINARY.equals(type)) {
-            return new BinaryFieldSetter(rowInspector, row, field);
+            return new BinaryFieldTranslator();
         }
         if (DATE.equals(type)) {
-            return new DateFieldSetter(rowInspector, row, field);
+            return new DateFieldTranslator();
         }
         if (type instanceof TimestampType) {
-            return new TimestampFieldSetter(rowInspector, row, field, (TimestampType) type);
+            return new TimestampFieldTranslator((TimestampType) type);
         }
         if (type instanceof DecimalType) {
-            DecimalType decimalType = (DecimalType) type;
-            return new DecimalFieldSetter(rowInspector, row, field, decimalType);
+            return new DecimalFieldTranslator((DecimalType) type);
         }
         if (type instanceof ArrayType) {
-            return new ArrayFieldSetter(rowInspector, row, field, ((ArrayType) type).getElementType());
+            return new ArrayFieldTranslator((ArrayType) type);
         }
         if (type instanceof MapType) {
-            return new MapFieldSetter(rowInspector, row, field, ((MapType) type).getKeyType(), ((MapType) type).getValueType());
+            return new MapFieldTranslator((MapType) type);
         }
         if (type instanceof RowType) {
-            return new RowFieldSetter(rowInspector, row, field, type.getTypeParameters());
+            return new RowFieldTranslator((RowType) type);
         }
         throw new IllegalArgumentException("unsupported type: " + type);
     }
 
-    public abstract static class FieldSetter
+    public interface FieldSetter
     {
-        protected final SettableStructObjectInspector rowInspector;
-        protected final Object row;
-        protected final StructField field;
+        void setField(Block block, int position);
+    }
 
-        protected FieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
+    protected interface FieldTranslator<V>
+    {
+        /**
+         * Get a Hive object representing a value from the block.
+         *
+         * <p>This is not guaranteed to return a new object for each call, and
+         * in many cases it will not (see {@link StatefulFieldTranslator}).
+         */
+        V getHiveValue(Block block, int position);
+    }
+
+    /**
+     * Basic implementation of {@link FieldSetter} that handles the actual
+     * field-setting, leaving the data translation to a {@link FieldTranslator}.
+     */
+    protected static class TranslatingFieldSetter
+            implements FieldSetter
+    {
+        private final SettableStructObjectInspector inspector;
+        private final Object row;
+        private final StructField field;
+        private final FieldTranslator<?> fieldTranslator;
+
+        protected TranslatingFieldSetter(SettableStructObjectInspector inspector, Object row, StructField field, FieldTranslator<?> fieldTranslator)
         {
-            this.rowInspector = requireNonNull(rowInspector, "rowInspector is null");
+            this.inspector = requireNonNull(inspector, "inspector is null");
             this.row = requireNonNull(row, "row is null");
             this.field = requireNonNull(field, "field is null");
-        }
-
-        public abstract void setField(Block block, int position);
-    }
-
-    private static class BooleanFieldSetter
-            extends FieldSetter
-    {
-        private final BooleanWritable value = new BooleanWritable();
-
-        public BooleanFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
-        {
-            super(rowInspector, row, field);
+            this.fieldTranslator = requireNonNull(fieldTranslator, "field mapper is null");
         }
 
         @Override
-        public void setField(Block block, int position)
+        public final void setField(Block block, int position)
         {
-            value.set(BOOLEAN.getBoolean(block, position));
-            rowInspector.setStructFieldData(row, field, value);
+            inspector.setStructFieldData(row, field, fieldTranslator.getHiveValue(block, position));
         }
     }
 
-    private static class BigintFieldSetter
-            extends FieldSetter
+    /**
+     * An {@link FieldTranslator} with a stateful Hive value.
+     *
+     * <p>Reuses and returns the same object for each call to {@link #getHiveValue(Block, int)}.
+     */
+    protected abstract static class StatefulFieldTranslator<V>
+            implements FieldTranslator<V>
     {
-        private final LongWritable value = new LongWritable();
+        protected final V state;
 
-        public BigintFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
+        protected StatefulFieldTranslator(V state)
         {
-            super(rowInspector, row, field);
+            this.state = requireNonNull(state, "state is null");
+        }
+
+        /**
+         * Write from the specified block and position to this instance's {@link #state}.
+         */
+        protected abstract void setValue(Block block, int position);
+
+        @Override
+        public final V getHiveValue(Block block, int position)
+        {
+            setValue(block, position);
+            return state;
+        }
+    }
+
+    private static class BooleanFieldTranslator
+            extends StatefulFieldTranslator<BooleanWritable>
+    {
+        BooleanFieldTranslator()
+        {
+            super(new BooleanWritable());
         }
 
         @Override
-        public void setField(Block block, int position)
+        public void setValue(Block block, int position)
         {
-            value.set(BIGINT.getLong(block, position));
-            rowInspector.setStructFieldData(row, field, value);
+            state.set(BOOLEAN.getBoolean(block, position));
         }
     }
 
-    private static class IntFieldSetter
-            extends FieldSetter
+    private static class BigintFieldTranslator
+            extends StatefulFieldTranslator<LongWritable>
     {
-        private final IntWritable value = new IntWritable();
-
-        public IntFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
+        BigintFieldTranslator()
         {
-            super(rowInspector, row, field);
+            super(new LongWritable());
         }
 
         @Override
-        public void setField(Block block, int position)
+        public void setValue(Block block, int position)
         {
-            value.set(toIntExact(INTEGER.getLong(block, position)));
-            rowInspector.setStructFieldData(row, field, value);
+            state.set(BIGINT.getLong(block, position));
         }
     }
 
-    private static class SmallintFieldSetter
-            extends FieldSetter
+    private static class IntFieldTranslator
+            extends StatefulFieldTranslator<IntWritable>
     {
-        private final ShortWritable value = new ShortWritable();
-
-        public SmallintFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
+        IntFieldTranslator()
         {
-            super(rowInspector, row, field);
+            super(new IntWritable());
         }
 
         @Override
-        public void setField(Block block, int position)
+        public void setValue(Block block, int position)
         {
-            value.set(Shorts.checkedCast(SMALLINT.getLong(block, position)));
-            rowInspector.setStructFieldData(row, field, value);
+            state.set(toIntExact(INTEGER.getLong(block, position)));
         }
     }
 
-    private static class TinyintFieldSetter
-            extends FieldSetter
+    private static class SmallintFieldTranslator
+            extends StatefulFieldTranslator<ShortWritable>
     {
-        private final ByteWritable value = new ByteWritable();
-
-        public TinyintFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
+        SmallintFieldTranslator()
         {
-            super(rowInspector, row, field);
+            super(new ShortWritable());
         }
 
         @Override
-        public void setField(Block block, int position)
+        public void setValue(Block block, int position)
         {
-            value.set(SignedBytes.checkedCast(TINYINT.getLong(block, position)));
-            rowInspector.setStructFieldData(row, field, value);
+            state.set(Shorts.checkedCast(SMALLINT.getLong(block, position)));
         }
     }
 
-    private static class DoubleFieldSetter
-            extends FieldSetter
+    private static class TinyintFieldTranslator
+            extends StatefulFieldTranslator<ByteWritable>
     {
-        private final DoubleWritable value = new DoubleWritable();
-
-        public DoubleFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
+        TinyintFieldTranslator()
         {
-            super(rowInspector, row, field);
+            super(new ByteWritable());
         }
 
         @Override
-        public void setField(Block block, int position)
+        public void setValue(Block block, int position)
         {
-            value.set(DOUBLE.getDouble(block, position));
-            rowInspector.setStructFieldData(row, field, value);
+            state.set(SignedBytes.checkedCast(TINYINT.getLong(block, position)));
         }
     }
 
-    private static class FloatFieldSetter
-            extends FieldSetter
+    private static class DoubleFieldTranslator
+            extends StatefulFieldTranslator<DoubleWritable>
     {
-        private final FloatWritable value = new FloatWritable();
-
-        public FloatFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
+        DoubleFieldTranslator()
         {
-            super(rowInspector, row, field);
+            super(new DoubleWritable());
         }
 
         @Override
-        public void setField(Block block, int position)
+        public void setValue(Block block, int position)
         {
-            value.set(intBitsToFloat((int) REAL.getLong(block, position)));
-            rowInspector.setStructFieldData(row, field, value);
+            state.set(DOUBLE.getDouble(block, position));
         }
     }
 
-    private static class VarcharFieldSetter
-            extends FieldSetter
+    private static class FloatFieldTranslator
+            extends StatefulFieldTranslator<FloatWritable>
     {
-        private final Text value = new Text();
+        FloatFieldTranslator()
+        {
+            super(new FloatWritable());
+        }
+
+        @Override
+        public void setValue(Block block, int position)
+        {
+            state.set(intBitsToFloat((int) REAL.getLong(block, position)));
+        }
+    }
+
+    private static class VarcharFieldTranslator
+            extends StatefulFieldTranslator<Text>
+    {
         private final Type type;
 
-        public VarcharFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field, Type type)
+        VarcharFieldTranslator(Type type)
         {
-            super(rowInspector, row, field);
+            super(new Text());
             this.type = type;
         }
 
         @Override
-        public void setField(Block block, int position)
+        public void setValue(Block block, int position)
         {
-            value.set(type.getSlice(block, position).getBytes());
-            rowInspector.setStructFieldData(row, field, value);
+            state.set(type.getSlice(block, position).getBytes());
         }
     }
 
-    private static class CharFieldSetter
-            extends FieldSetter
+    private static class CharFieldTranslator
+            extends StatefulFieldTranslator<Text>
     {
-        private final Text value = new Text();
         private final Type type;
 
-        public CharFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field, Type type)
+        CharFieldTranslator(Type type)
         {
-            super(rowInspector, row, field);
+            super(new Text());
             this.type = type;
         }
 
         @Override
-        public void setField(Block block, int position)
+        public void setValue(Block block, int position)
         {
-            value.set(type.getSlice(block, position).getBytes());
-            rowInspector.setStructFieldData(row, field, value);
+            state.set(type.getSlice(block, position).getBytes());
         }
     }
 
-    private static class BinaryFieldSetter
-            extends FieldSetter
+    private static class BinaryFieldTranslator
+            extends StatefulFieldTranslator<BytesWritable>
     {
-        private final BytesWritable value = new BytesWritable();
-
-        public BinaryFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
+        BinaryFieldTranslator()
         {
-            super(rowInspector, row, field);
+            super(new BytesWritable());
         }
 
         @Override
-        public void setField(Block block, int position)
+        public void setValue(Block block, int position)
         {
             byte[] bytes = VARBINARY.getSlice(block, position).getBytes();
-            value.set(bytes, 0, bytes.length);
-            rowInspector.setStructFieldData(row, field, value);
+            state.set(bytes, 0, bytes.length);
         }
     }
 
-    private static class DateFieldSetter
-            extends FieldSetter
+    private static class DateFieldTranslator
+            extends StatefulFieldTranslator<DateWritableV2>
     {
-        private final DateWritableV2 value = new DateWritableV2();
-
-        public DateFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
+        DateFieldTranslator()
         {
-            super(rowInspector, row, field);
+            super(new DateWritableV2());
         }
 
         @Override
-        public void setField(Block block, int position)
+        public void setValue(Block block, int position)
         {
-            value.set(toIntExact(DATE.getLong(block, position)));
-            rowInspector.setStructFieldData(row, field, value);
+            state.set(toIntExact(DATE.getLong(block, position)));
         }
     }
 
-    private static class TimestampFieldSetter
-            extends FieldSetter
+    private static class TimestampFieldTranslator
+            extends StatefulFieldTranslator<TimestampWritableV2>
     {
         private final TimestampType type;
-        private final TimestampWritableV2 value = new TimestampWritableV2();
 
-        public TimestampFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field, TimestampType type)
+        TimestampFieldTranslator(TimestampType type)
         {
-            super(rowInspector, row, field);
+            super(new TimestampWritableV2());
             this.type = requireNonNull(type, "type is null");
         }
 
         @Override
-        public void setField(Block block, int position)
+        public void setValue(Block block, int position)
         {
-            value.set(getHiveTimestamp(type, block, position));
-            rowInspector.setStructFieldData(row, field, value);
+            state.set(getHiveTimestamp(type, block, position));
         }
     }
 
-    private static class DecimalFieldSetter
-            extends FieldSetter
+    private static class DecimalFieldTranslator
+            extends StatefulFieldTranslator<HiveDecimalWritable>
     {
-        private final HiveDecimalWritable value = new HiveDecimalWritable();
         private final DecimalType decimalType;
 
-        public DecimalFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field, DecimalType decimalType)
+        DecimalFieldTranslator(DecimalType decimalType)
         {
-            super(rowInspector, row, field);
+            super(new HiveDecimalWritable());
             this.decimalType = decimalType;
         }
 
         @Override
-        public void setField(Block block, int position)
+        public void setValue(Block block, int position)
         {
-            value.set(getHiveDecimal(decimalType, block, position));
-            rowInspector.setStructFieldData(row, field, value);
+            state.set(getHiveDecimal(decimalType, block, position));
         }
     }
 
-    private class ArrayFieldSetter
-            extends FieldSetter
+    private class ArrayFieldTranslator
+            implements FieldTranslator<List<Object>>
     {
-        private final Type elementType;
+        private final ArrayType type;
 
-        public ArrayFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field, Type elementType)
+        ArrayFieldTranslator(ArrayType type)
         {
-            super(rowInspector, row, field);
-            this.elementType = requireNonNull(elementType, "elementType is null");
+            this.type = requireNonNull(type, "array type is null");
         }
 
         @Override
-        public void setField(Block block, int position)
+        public List<Object> getHiveValue(Block block, int position)
         {
             Block arrayBlock = block.getObject(position, Block.class);
 
             List<Object> list = new ArrayList<>(arrayBlock.getPositionCount());
             for (int i = 0; i < arrayBlock.getPositionCount(); i++) {
-                list.add(getField(elementType, arrayBlock, i));
+                list.add(getField(type.getElementType(), arrayBlock, i));
             }
-
-            rowInspector.setStructFieldData(row, field, list);
+            return list;
         }
     }
 
-    private class MapFieldSetter
-            extends FieldSetter
+    private class MapFieldTranslator
+            implements FieldTranslator<Map<Object, Object>>
     {
-        private final Type keyType;
-        private final Type valueType;
+        private final MapType type;
 
-        public MapFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field, Type keyType, Type valueType)
+        MapFieldTranslator(MapType type)
         {
-            super(rowInspector, row, field);
-            this.keyType = requireNonNull(keyType, "keyType is null");
-            this.valueType = requireNonNull(valueType, "valueType is null");
+            this.type = requireNonNull(type, "map type is null");
         }
 
         @Override
-        public void setField(Block block, int position)
+        public Map<Object, Object> getHiveValue(Block block, int position)
         {
             Block mapBlock = block.getObject(position, Block.class);
+
             Map<Object, Object> map = new HashMap<>(mapBlock.getPositionCount() * 2);
             for (int i = 0; i < mapBlock.getPositionCount(); i += 2) {
                 map.put(
-                        getField(keyType, mapBlock, i),
-                        getField(valueType, mapBlock, i + 1));
+                        getField(type.getKeyType(), mapBlock, i),
+                        getField(type.getValueType(), mapBlock, i + 1));
             }
-
-            rowInspector.setStructFieldData(row, field, map);
+            return map;
         }
     }
 
-    private class RowFieldSetter
-            extends FieldSetter
+    private class RowFieldTranslator
+            implements FieldTranslator<List<Object>>
     {
-        private final List<Type> fieldTypes;
+        private final RowType type;
 
-        public RowFieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field, List<Type> fieldTypes)
+        RowFieldTranslator(RowType type)
         {
-            super(rowInspector, row, field);
-            this.fieldTypes = ImmutableList.copyOf(fieldTypes);
+            this.type = requireNonNull(type, "row type is null");
         }
 
         @Override
-        public void setField(Block block, int position)
+        public List<Object> getHiveValue(Block block, int position)
         {
             Block rowBlock = block.getObject(position, Block.class);
 
@@ -466,12 +483,12 @@ public class FieldSetterFactory
             // Ideally, we'd use the same recursive structure starting from the top, but
             // this requires modeling row types in the same way we model table rows
             // (multiple blocks vs all fields packed in a single block)
+            List<Type> fieldTypes = type.getTypeParameters();
             List<Object> value = new ArrayList<>(fieldTypes.size());
             for (int i = 0; i < fieldTypes.size(); i++) {
                 value.add(getField(fieldTypes.get(i), rowBlock, i));
             }
-
-            rowInspector.setStructFieldData(row, field, value);
+            return value;
         }
     }
 
