@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.hive.util;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.CharMatcher;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Shorts;
@@ -421,6 +422,7 @@ public final class HiveWriteUtils
         }
     }
 
+    @VisibleForTesting
     public static FileSystem getRawFileSystem(FileSystem fileSystem)
     {
         if (fileSystem instanceof FilterFileSystem) {
@@ -576,7 +578,7 @@ public final class HiveWriteUtils
                 .collect(toList());
     }
 
-    public static ObjectInspector getRowColumnInspector(Type type)
+    private static ObjectInspector getRowColumnInspector(Type type)
     {
         if (type.equals(BOOLEAN)) {
             return writableBooleanObjectInspector;
