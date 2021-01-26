@@ -75,49 +75,83 @@ public class FieldSetterFactory
 {
     public FieldSetter create(SettableStructObjectInspector rowInspector, Object row, StructField field, Type type)
     {
-        return new TranslatingFieldSetter(rowInspector, row, field, getFieldTranslator(type).get());
+        requireNonNull(rowInspector, "row inspector is null");
+        requireNonNull(row, "row is null");
+        requireNonNull(field, "field is null");
+        FieldTranslator<?> fieldTranslator = getFieldTranslator(type).get();
+        return (block, position) ->
+                rowInspector.setStructFieldData(row, field, fieldTranslator.getHiveValue(block, position));
     }
 
     protected Supplier<FieldTranslator<?>> getFieldTranslator(Type type)
     {
         if (BOOLEAN.equals(type)) {
-            return BooleanFieldTranslator::new;
+            return getTranslator(
+                    BooleanWritable::new,
+                    (state, block, position) -> state.set(BOOLEAN.getBoolean(block, position)));
         }
         if (BIGINT.equals(type)) {
-            return BigintFieldTranslator::new;
+            return getTranslator(
+                    LongWritable::new,
+                    (state, block, position) -> state.set(BIGINT.getLong(block, position)));
         }
         if (INTEGER.equals(type)) {
-            return IntFieldTranslator::new;
+            return getTranslator(
+                    IntWritable::new,
+                    (state, block, position) -> state.set(toIntExact(INTEGER.getLong(block, position))));
         }
         if (SMALLINT.equals(type)) {
-            return SmallintFieldTranslator::new;
+            return getTranslator(
+                    ShortWritable::new,
+                    (state, block, position) -> state.set(Shorts.checkedCast(SMALLINT.getLong(block, position))));
         }
         if (TINYINT.equals(type)) {
-            return TinyintFieldTranslator::new;
+            return getTranslator(
+                    ByteWritable::new,
+                    (state, block, position) -> state.set(SignedBytes.checkedCast(TINYINT.getLong(block, position))));
         }
         if (REAL.equals(type)) {
-            return FloatFieldTranslator::new;
+            return getTranslator(
+                    FloatWritable::new,
+                    (state, block, position) -> state.set(intBitsToFloat((int) REAL.getLong(block, position))));
         }
         if (DOUBLE.equals(type)) {
-            return DoubleFieldTranslator::new;
+            return getTranslator(
+                    DoubleWritable::new,
+                    (state, block, position) -> state.set(DOUBLE.getDouble(block, position)));
         }
         if (type instanceof VarcharType) {
-            return () -> new VarcharFieldTranslator(type);
+            return getTranslator(
+                    Text::new,
+                    (state, block, position) -> state.set(type.getSlice(block, position).getBytes()));
         }
         if (type instanceof CharType) {
-            return () -> new CharFieldTranslator(type);
+            return getTranslator(
+                    Text::new,
+                    (state, block, position) -> state.set(type.getSlice(block, position).getBytes()));
         }
         if (VARBINARY.equals(type)) {
-            return BinaryFieldTranslator::new;
+            return getTranslator(
+                    BytesWritable::new,
+                    (state, block, position) -> {
+                        byte[] bytes = VARBINARY.getSlice(block, position).getBytes();
+                        state.set(bytes, 0, bytes.length);
+                    });
         }
         if (DATE.equals(type)) {
-            return DateFieldTranslator::new;
+            return getTranslator(
+                    DateWritableV2::new,
+                    (state, block, position) -> state.set(toIntExact(DATE.getLong(block, position))));
         }
         if (type instanceof TimestampType) {
-            return () -> new TimestampFieldTranslator((TimestampType) type);
+            return getTranslator(
+                    TimestampWritableV2::new,
+                    (state, block, position) -> state.set(getHiveTimestamp((TimestampType) type, block, position)));
         }
         if (type instanceof DecimalType) {
-            return () -> new DecimalFieldTranslator((DecimalType) type);
+            return getTranslator(
+                    HiveDecimalWritable::new,
+                    (state, block, position) -> state.set(getHiveDecimal((DecimalType) type, block, position)));
         }
         if (type instanceof ArrayType) {
             return () -> new ArrayFieldTranslator((ArrayType) type);
@@ -131,9 +165,34 @@ public class FieldSetterFactory
         throw new IllegalArgumentException("unsupported type: " + type);
     }
 
+    protected static <V> Supplier<FieldTranslator<?>> getTranslator(Supplier<V> stateSupplier, StateSetter<V> setter)
+    {
+        return () -> new StatefulFieldTranslator<>(stateSupplier.get())
+        {
+            @Override
+            protected void setValue(Block block, int position)
+            {
+                setter.setValue(state, block, position);
+            }
+        };
+    }
+
+    /**
+     * An object that represents the action of setting a field of a Hive-compatible object.
+     */
+    @FunctionalInterface
     public interface FieldSetter
     {
         void setField(Block block, int position);
+    }
+
+    /**
+     * Similar to a {@link FieldSetter}, but with caller-provided state.
+     */
+    @FunctionalInterface
+    private interface StateSetter<V>
+    {
+        void setValue(V state, Block block, int position);
     }
 
     protected interface FieldTranslator<V>
@@ -148,34 +207,7 @@ public class FieldSetterFactory
     }
 
     /**
-     * Basic implementation of {@link FieldSetter} that handles the actual
-     * field-setting, leaving the data translation to a {@link FieldTranslator}.
-     */
-    protected static class TranslatingFieldSetter
-            implements FieldSetter
-    {
-        private final SettableStructObjectInspector inspector;
-        private final Object row;
-        private final StructField field;
-        private final FieldTranslator<?> fieldTranslator;
-
-        protected TranslatingFieldSetter(SettableStructObjectInspector inspector, Object row, StructField field, FieldTranslator<?> fieldTranslator)
-        {
-            this.inspector = requireNonNull(inspector, "inspector is null");
-            this.row = requireNonNull(row, "row is null");
-            this.field = requireNonNull(field, "field is null");
-            this.fieldTranslator = requireNonNull(fieldTranslator, "field mapper is null");
-        }
-
-        @Override
-        public final void setField(Block block, int position)
-        {
-            inspector.setStructFieldData(row, field, fieldTranslator.getHiveValue(block, position));
-        }
-    }
-
-    /**
-     * An {@link FieldTranslator} with a stateful Hive value.
+     * A {@link FieldTranslator} with a stateful Hive value.
      *
      * <p>Reuses and returns the same object for each call to {@link #getHiveValue(Block, int)}.
      */
@@ -199,214 +231,6 @@ public class FieldSetterFactory
         {
             setValue(block, position);
             return state;
-        }
-    }
-
-    private static class BooleanFieldTranslator
-            extends StatefulFieldTranslator<BooleanWritable>
-    {
-        BooleanFieldTranslator()
-        {
-            super(new BooleanWritable());
-        }
-
-        @Override
-        public void setValue(Block block, int position)
-        {
-            state.set(BOOLEAN.getBoolean(block, position));
-        }
-    }
-
-    private static class BigintFieldTranslator
-            extends StatefulFieldTranslator<LongWritable>
-    {
-        BigintFieldTranslator()
-        {
-            super(new LongWritable());
-        }
-
-        @Override
-        public void setValue(Block block, int position)
-        {
-            state.set(BIGINT.getLong(block, position));
-        }
-    }
-
-    private static class IntFieldTranslator
-            extends StatefulFieldTranslator<IntWritable>
-    {
-        IntFieldTranslator()
-        {
-            super(new IntWritable());
-        }
-
-        @Override
-        public void setValue(Block block, int position)
-        {
-            state.set(toIntExact(INTEGER.getLong(block, position)));
-        }
-    }
-
-    private static class SmallintFieldTranslator
-            extends StatefulFieldTranslator<ShortWritable>
-    {
-        SmallintFieldTranslator()
-        {
-            super(new ShortWritable());
-        }
-
-        @Override
-        public void setValue(Block block, int position)
-        {
-            state.set(Shorts.checkedCast(SMALLINT.getLong(block, position)));
-        }
-    }
-
-    private static class TinyintFieldTranslator
-            extends StatefulFieldTranslator<ByteWritable>
-    {
-        TinyintFieldTranslator()
-        {
-            super(new ByteWritable());
-        }
-
-        @Override
-        public void setValue(Block block, int position)
-        {
-            state.set(SignedBytes.checkedCast(TINYINT.getLong(block, position)));
-        }
-    }
-
-    private static class DoubleFieldTranslator
-            extends StatefulFieldTranslator<DoubleWritable>
-    {
-        DoubleFieldTranslator()
-        {
-            super(new DoubleWritable());
-        }
-
-        @Override
-        public void setValue(Block block, int position)
-        {
-            state.set(DOUBLE.getDouble(block, position));
-        }
-    }
-
-    private static class FloatFieldTranslator
-            extends StatefulFieldTranslator<FloatWritable>
-    {
-        FloatFieldTranslator()
-        {
-            super(new FloatWritable());
-        }
-
-        @Override
-        public void setValue(Block block, int position)
-        {
-            state.set(intBitsToFloat((int) REAL.getLong(block, position)));
-        }
-    }
-
-    private static class VarcharFieldTranslator
-            extends StatefulFieldTranslator<Text>
-    {
-        private final Type type;
-
-        VarcharFieldTranslator(Type type)
-        {
-            super(new Text());
-            this.type = type;
-        }
-
-        @Override
-        public void setValue(Block block, int position)
-        {
-            state.set(type.getSlice(block, position).getBytes());
-        }
-    }
-
-    private static class CharFieldTranslator
-            extends StatefulFieldTranslator<Text>
-    {
-        private final Type type;
-
-        CharFieldTranslator(Type type)
-        {
-            super(new Text());
-            this.type = type;
-        }
-
-        @Override
-        public void setValue(Block block, int position)
-        {
-            state.set(type.getSlice(block, position).getBytes());
-        }
-    }
-
-    private static class BinaryFieldTranslator
-            extends StatefulFieldTranslator<BytesWritable>
-    {
-        BinaryFieldTranslator()
-        {
-            super(new BytesWritable());
-        }
-
-        @Override
-        public void setValue(Block block, int position)
-        {
-            byte[] bytes = VARBINARY.getSlice(block, position).getBytes();
-            state.set(bytes, 0, bytes.length);
-        }
-    }
-
-    private static class DateFieldTranslator
-            extends StatefulFieldTranslator<DateWritableV2>
-    {
-        DateFieldTranslator()
-        {
-            super(new DateWritableV2());
-        }
-
-        @Override
-        public void setValue(Block block, int position)
-        {
-            state.set(toIntExact(DATE.getLong(block, position)));
-        }
-    }
-
-    private static class TimestampFieldTranslator
-            extends StatefulFieldTranslator<TimestampWritableV2>
-    {
-        private final TimestampType type;
-
-        TimestampFieldTranslator(TimestampType type)
-        {
-            super(new TimestampWritableV2());
-            this.type = requireNonNull(type, "type is null");
-        }
-
-        @Override
-        public void setValue(Block block, int position)
-        {
-            state.set(getHiveTimestamp(type, block, position));
-        }
-    }
-
-    private static class DecimalFieldTranslator
-            extends StatefulFieldTranslator<HiveDecimalWritable>
-    {
-        private final DecimalType decimalType;
-
-        DecimalFieldTranslator(DecimalType decimalType)
-        {
-            super(new HiveDecimalWritable());
-            this.decimalType = decimalType;
-        }
-
-        @Override
-        public void setValue(Block block, int position)
-        {
-            state.set(getHiveDecimal(decimalType, block, position));
         }
     }
 
