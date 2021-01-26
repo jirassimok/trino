@@ -16,8 +16,6 @@ package io.trino.plugin.hive.util;
 import com.google.common.primitives.Shorts;
 import com.google.common.primitives.SignedBytes;
 import io.trino.plugin.hive.HiveTimestampPrecision;
-import io.trino.spi.StandardErrorCode;
-import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.CharType;
@@ -29,7 +27,6 @@ import io.trino.spi.type.RowType;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
-import org.apache.hadoop.hive.common.type.Date;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.common.type.Timestamp;
 import org.apache.hadoop.hive.serde2.io.DateWritableV2;
@@ -52,13 +49,11 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import static com.google.common.base.Verify.verify;
-import static io.trino.plugin.hive.util.HiveUtil.checkCondition;
-import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
-import static io.trino.spi.type.Chars.padSpaces;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
@@ -73,66 +68,65 @@ import static java.lang.Float.intBitsToFloat;
 import static java.lang.Math.floorDiv;
 import static java.lang.Math.floorMod;
 import static java.lang.Math.toIntExact;
-import static java.util.Collections.unmodifiableList;
-import static java.util.Collections.unmodifiableMap;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.toUnmodifiableList;
 
 public class FieldSetterFactory
 {
     public FieldSetter create(SettableStructObjectInspector rowInspector, Object row, StructField field, Type type)
     {
-        return new TranslatingFieldSetter(rowInspector, row, field, getFieldTranslator(type));
+        return new TranslatingFieldSetter(rowInspector, row, field, getFieldTranslator(type).get());
     }
 
-    protected FieldTranslator<?> getFieldTranslator(Type type)
+    protected Supplier<FieldTranslator<?>> getFieldTranslator(Type type)
     {
         if (BOOLEAN.equals(type)) {
-            return new BooleanFieldTranslator();
+            return BooleanFieldTranslator::new;
         }
         if (BIGINT.equals(type)) {
-            return new BigintFieldTranslator();
+            return BigintFieldTranslator::new;
         }
         if (INTEGER.equals(type)) {
-            return new IntFieldTranslator();
+            return IntFieldTranslator::new;
         }
         if (SMALLINT.equals(type)) {
-            return new SmallintFieldTranslator();
+            return SmallintFieldTranslator::new;
         }
         if (TINYINT.equals(type)) {
-            return new TinyintFieldTranslator();
+            return TinyintFieldTranslator::new;
         }
         if (REAL.equals(type)) {
-            return new FloatFieldTranslator();
+            return FloatFieldTranslator::new;
         }
         if (DOUBLE.equals(type)) {
-            return new DoubleFieldTranslator();
+            return DoubleFieldTranslator::new;
         }
         if (type instanceof VarcharType) {
-            return new VarcharFieldTranslator(type);
+            return () -> new VarcharFieldTranslator(type);
         }
         if (type instanceof CharType) {
-            return new CharFieldTranslator(type);
+            return () -> new CharFieldTranslator(type);
         }
         if (VARBINARY.equals(type)) {
-            return new BinaryFieldTranslator();
+            return BinaryFieldTranslator::new;
         }
         if (DATE.equals(type)) {
-            return new DateFieldTranslator();
+            return DateFieldTranslator::new;
         }
         if (type instanceof TimestampType) {
-            return new TimestampFieldTranslator((TimestampType) type);
+            return () -> new TimestampFieldTranslator((TimestampType) type);
         }
         if (type instanceof DecimalType) {
-            return new DecimalFieldTranslator((DecimalType) type);
+            return () -> new DecimalFieldTranslator((DecimalType) type);
         }
         if (type instanceof ArrayType) {
-            return new ArrayFieldTranslator((ArrayType) type);
+            return () -> new ArrayFieldTranslator((ArrayType) type);
         }
         if (type instanceof MapType) {
-            return new MapFieldTranslator((MapType) type);
+            return () -> new MapFieldTranslator((MapType) type);
         }
         if (type instanceof RowType) {
-            return new RowFieldTranslator((RowType) type);
+            return () -> new RowFieldTranslator((RowType) type);
         }
         throw new IllegalArgumentException("unsupported type: " + type);
     }
@@ -419,21 +413,20 @@ public class FieldSetterFactory
     private class ArrayFieldTranslator
             implements FieldTranslator<List<Object>>
     {
-        private final ArrayType type;
+        private final Supplier<FieldTranslator<?>> elementTranslator;
 
         ArrayFieldTranslator(ArrayType type)
         {
-            this.type = requireNonNull(type, "array type is null");
+            elementTranslator = getFieldTranslator(type.getElementType());
         }
 
         @Override
         public List<Object> getHiveValue(Block block, int position)
         {
             Block arrayBlock = block.getObject(position, Block.class);
-
             List<Object> list = new ArrayList<>(arrayBlock.getPositionCount());
             for (int i = 0; i < arrayBlock.getPositionCount(); i++) {
-                list.add(getField(type.getElementType(), arrayBlock, i));
+                list.add(elementTranslator.get().getHiveValue(arrayBlock, i));
             }
             return list;
         }
@@ -442,23 +435,24 @@ public class FieldSetterFactory
     private class MapFieldTranslator
             implements FieldTranslator<Map<Object, Object>>
     {
-        private final MapType type;
+        private final Supplier<FieldTranslator<?>> keyTranslator;
+        private final Supplier<FieldTranslator<?>> valueTranslator;
 
         MapFieldTranslator(MapType type)
         {
-            this.type = requireNonNull(type, "map type is null");
+            keyTranslator = getFieldTranslator(type.getKeyType());
+            valueTranslator = getFieldTranslator(type.getValueType());
         }
 
         @Override
         public Map<Object, Object> getHiveValue(Block block, int position)
         {
             Block mapBlock = block.getObject(position, Block.class);
-
             Map<Object, Object> map = new HashMap<>(mapBlock.getPositionCount() * 2);
             for (int i = 0; i < mapBlock.getPositionCount(); i += 2) {
                 map.put(
-                        getField(type.getKeyType(), mapBlock, i),
-                        getField(type.getValueType(), mapBlock, i + 1));
+                        keyTranslator.get().getHiveValue(mapBlock, i),
+                        valueTranslator.get().getHiveValue(mapBlock, i + 1));
             }
             return map;
         }
@@ -467,114 +461,25 @@ public class FieldSetterFactory
     private class RowFieldTranslator
             implements FieldTranslator<List<Object>>
     {
-        private final RowType type;
+        List<Supplier<FieldTranslator<?>>> fieldTranslators;
 
         RowFieldTranslator(RowType type)
         {
-            this.type = requireNonNull(type, "row type is null");
+            fieldTranslators = type.getTypeParameters().stream()
+                    .map(FieldSetterFactory.this::getFieldTranslator)
+                    .collect(toUnmodifiableList());
         }
 
         @Override
         public List<Object> getHiveValue(Block block, int position)
         {
             Block rowBlock = block.getObject(position, Block.class);
-
-            // TODO reuse row object and use FieldSetters, like we do at the top level
-            // Ideally, we'd use the same recursive structure starting from the top, but
-            // this requires modeling row types in the same way we model table rows
-            // (multiple blocks vs all fields packed in a single block)
-            List<Type> fieldTypes = type.getTypeParameters();
-            List<Object> value = new ArrayList<>(fieldTypes.size());
-            for (int i = 0; i < fieldTypes.size(); i++) {
-                value.add(getField(fieldTypes.get(i), rowBlock, i));
+            List<Object> value = new ArrayList<>(fieldTranslators.size());
+            for (int i = 0; i < fieldTranslators.size(); i++) {
+                value.add(fieldTranslators.get(i).get().getHiveValue(rowBlock, i));
             }
             return value;
         }
-    }
-
-    protected Object getField(Type type, Block block, int position)
-    {
-        if (block.isNull(position)) {
-            return null;
-        }
-        if (BOOLEAN.equals(type)) {
-            return type.getBoolean(block, position);
-        }
-        if (BIGINT.equals(type)) {
-            return type.getLong(block, position);
-        }
-        if (INTEGER.equals(type)) {
-            return toIntExact(type.getLong(block, position));
-        }
-        if (SMALLINT.equals(type)) {
-            return Shorts.checkedCast(type.getLong(block, position));
-        }
-        if (TINYINT.equals(type)) {
-            return SignedBytes.checkedCast(type.getLong(block, position));
-        }
-        if (REAL.equals(type)) {
-            return intBitsToFloat((int) type.getLong(block, position));
-        }
-        if (DOUBLE.equals(type)) {
-            return type.getDouble(block, position);
-        }
-        if (type instanceof VarcharType) {
-            return new Text(type.getSlice(block, position).getBytes());
-        }
-        if (type instanceof CharType) {
-            CharType charType = (CharType) type;
-            return new Text(padSpaces(type.getSlice(block, position), charType).toStringUtf8());
-        }
-        if (VARBINARY.equals(type)) {
-            return type.getSlice(block, position).getBytes();
-        }
-        if (DATE.equals(type)) {
-            return Date.ofEpochDay(toIntExact(type.getLong(block, position)));
-        }
-        if (type instanceof TimestampType) {
-            return getHiveTimestamp((TimestampType) type, block, position);
-        }
-        if (type instanceof DecimalType) {
-            DecimalType decimalType = (DecimalType) type;
-            return getHiveDecimal(decimalType, block, position);
-        }
-        if (type instanceof ArrayType) {
-            Type elementType = ((ArrayType) type).getElementType();
-            Block arrayBlock = block.getObject(position, Block.class);
-
-            List<Object> list = new ArrayList<>(arrayBlock.getPositionCount());
-            for (int i = 0; i < arrayBlock.getPositionCount(); i++) {
-                list.add(getField(elementType, arrayBlock, i));
-            }
-            return unmodifiableList(list);
-        }
-        if (type instanceof MapType) {
-            Type keyType = ((MapType) type).getKeyType();
-            Type valueType = ((MapType) type).getValueType();
-            Block mapBlock = block.getObject(position, Block.class);
-
-            Map<Object, Object> map = new HashMap<>();
-            for (int i = 0; i < mapBlock.getPositionCount(); i += 2) {
-                map.put(
-                        getField(keyType, mapBlock, i),
-                        getField(valueType, mapBlock, i + 1));
-            }
-            return unmodifiableMap(map);
-        }
-        if (type instanceof RowType) {
-            List<Type> fieldTypes = type.getTypeParameters();
-            Block rowBlock = block.getObject(position, Block.class);
-            checkCondition(
-                    fieldTypes.size() == rowBlock.getPositionCount(),
-                    StandardErrorCode.GENERIC_INTERNAL_ERROR,
-                    "Expected row value field count does not match type field count");
-            List<Object> row = new ArrayList<>(rowBlock.getPositionCount());
-            for (int i = 0; i < rowBlock.getPositionCount(); i++) {
-                row.add(getField(fieldTypes.get(i), rowBlock, i));
-            }
-            return unmodifiableList(row);
-        }
-        throw new TrinoException(NOT_SUPPORTED, "unsupported type: " + type);
     }
 
     private static HiveDecimal getHiveDecimal(DecimalType decimalType, Block block, int position)

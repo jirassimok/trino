@@ -23,6 +23,8 @@ import org.apache.hadoop.hive.common.type.Timestamp;
 import org.apache.hadoop.hive.serde2.io.TimestampWritableV2;
 import org.joda.time.DateTimeZone;
 
+import java.util.function.Supplier;
+
 import static com.google.common.base.Verify.verify;
 import static io.trino.spi.type.Timestamps.MICROSECONDS_PER_MILLISECOND;
 import static io.trino.spi.type.Timestamps.MICROSECONDS_PER_SECOND;
@@ -44,21 +46,12 @@ public class ParquetFieldSetterFactory
     }
 
     @Override
-    protected FieldTranslator<?> getFieldTranslator(Type type)
+    protected Supplier<FieldTranslator<?>> getFieldTranslator(Type type)
     {
         if (type instanceof TimestampType) {
-            return new TimestampFieldTranslator((TimestampType) type);
+            return () -> new TimestampFieldTranslator((TimestampType) type);
         }
         return super.getFieldTranslator(type);
-    }
-
-    @Override
-    protected Object getField(Type type, Block block, int position)
-    {
-        if (type instanceof TimestampType) {
-            return getHiveTimestamp((TimestampType) type, block, position);
-        }
-        return super.getField(type, block, position);
     }
 
     private class TimestampFieldTranslator

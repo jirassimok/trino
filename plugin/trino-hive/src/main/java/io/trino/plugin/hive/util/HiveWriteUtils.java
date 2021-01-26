@@ -70,9 +70,7 @@ import org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.Serializer;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
-import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory;
 import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector.PrimitiveCategory;
-import org.apache.hadoop.hive.serde2.typeinfo.DecimalTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.ListTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.MapTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
@@ -91,9 +89,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.stream.IntStream;
 
 import static com.google.common.base.Verify.verify;
-import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.io.BaseEncoding.base16;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_DATABASE_LOCATION_ERROR;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_FILESYSTEM_ERROR;
@@ -106,9 +104,6 @@ import static io.trino.plugin.hive.metastore.MetastoreUtil.getProtectMode;
 import static io.trino.plugin.hive.metastore.MetastoreUtil.verifyOnline;
 import static io.trino.plugin.hive.s3.HiveS3Module.EMR_FS_CLASS_NAME;
 import static io.trino.plugin.hive.util.HiveUtil.checkCondition;
-import static io.trino.plugin.hive.util.HiveUtil.isArrayType;
-import static io.trino.plugin.hive.util.HiveUtil.isMapType;
-import static io.trino.plugin.hive.util.HiveUtil.isRowType;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
@@ -138,31 +133,23 @@ import static java.util.stream.Collectors.toList;
 import static org.apache.hadoop.hive.conf.HiveConf.ConfVars.COMPRESSRESULT;
 import static org.apache.hadoop.hive.metastore.TableType.MANAGED_TABLE;
 import static org.apache.hadoop.hive.metastore.TableType.MATERIALIZED_VIEW;
-import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.getPrimitiveJavaObjectInspector;
+import static org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory.getStandardListObjectInspector;
+import static org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory.getStandardMapObjectInspector;
+import static org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory.getStandardStructObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.getPrimitiveWritableObjectInspector;
-import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaBooleanObjectInspector;
-import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaByteArrayObjectInspector;
-import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaByteObjectInspector;
-import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaDateObjectInspector;
-import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaDoubleObjectInspector;
-import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaFloatObjectInspector;
-import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaIntObjectInspector;
-import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaLongObjectInspector;
-import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaShortObjectInspector;
-import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaTimestampObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableBinaryObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableBooleanObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableByteObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableDateObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableDoubleObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableFloatObjectInspector;
-import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableHiveCharObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableIntObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableLongObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableShortObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableStringObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.writableTimestampObjectInspector;
 import static org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory.getCharTypeInfo;
+import static org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory.getDecimalTypeInfo;
 import static org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory.getVarcharTypeInfo;
 
 public final class HiveWriteUtils
@@ -208,68 +195,6 @@ public final class HiveWriteUtils
         catch (SerDeException | ReflectiveOperationException e) {
             throw new TrinoException(HIVE_WRITER_DATA_ERROR, e);
         }
-    }
-
-    public static ObjectInspector getJavaObjectInspector(Type type)
-    {
-        if (type.equals(BOOLEAN)) {
-            return javaBooleanObjectInspector;
-        }
-        if (type.equals(BIGINT)) {
-            return javaLongObjectInspector;
-        }
-        if (type.equals(INTEGER)) {
-            return javaIntObjectInspector;
-        }
-        if (type.equals(SMALLINT)) {
-            return javaShortObjectInspector;
-        }
-        if (type.equals(TINYINT)) {
-            return javaByteObjectInspector;
-        }
-        if (type.equals(REAL)) {
-            return javaFloatObjectInspector;
-        }
-        if (type.equals(DOUBLE)) {
-            return javaDoubleObjectInspector;
-        }
-        if (type instanceof VarcharType) {
-            return writableStringObjectInspector;
-        }
-        if (type instanceof CharType) {
-            return writableHiveCharObjectInspector;
-        }
-        if (type.equals(VARBINARY)) {
-            return javaByteArrayObjectInspector;
-        }
-        if (type.equals(DATE)) {
-            return javaDateObjectInspector;
-        }
-        if (type instanceof TimestampType) {
-            return javaTimestampObjectInspector;
-        }
-        if (type instanceof DecimalType) {
-            DecimalType decimalType = (DecimalType) type;
-            return getPrimitiveJavaObjectInspector(new DecimalTypeInfo(decimalType.getPrecision(), decimalType.getScale()));
-        }
-        if (isArrayType(type)) {
-            return ObjectInspectorFactory.getStandardListObjectInspector(getJavaObjectInspector(type.getTypeParameters().get(0)));
-        }
-        if (isMapType(type)) {
-            ObjectInspector keyObjectInspector = getJavaObjectInspector(type.getTypeParameters().get(0));
-            ObjectInspector valueObjectInspector = getJavaObjectInspector(type.getTypeParameters().get(1));
-            return ObjectInspectorFactory.getStandardMapObjectInspector(keyObjectInspector, valueObjectInspector);
-        }
-        if (isRowType(type)) {
-            return ObjectInspectorFactory.getStandardStructObjectInspector(
-                    type.getTypeSignature().getParameters().stream()
-                            .map(parameter -> parameter.getNamedTypeSignature().getName().get())
-                            .collect(toImmutableList()),
-                    type.getTypeParameters().stream()
-                            .map(HiveWriteUtils::getJavaObjectInspector)
-                            .collect(toImmutableList()));
-        }
-        throw new IllegalArgumentException("unsupported type: " + type);
     }
 
     public static List<String> createPartitionValues(List<Type> partitionColumnTypes, Page partitionColumns, int position)
@@ -714,11 +639,28 @@ public final class HiveWriteUtils
 
         if (type instanceof DecimalType) {
             DecimalType decimalType = (DecimalType) type;
-            return getPrimitiveWritableObjectInspector(new DecimalTypeInfo(decimalType.getPrecision(), decimalType.getScale()));
+            return getPrimitiveWritableObjectInspector(getDecimalTypeInfo(decimalType.getPrecision(), decimalType.getScale()));
         }
 
-        if (isArrayType(type) || isMapType(type) || isRowType(type)) {
-            return getJavaObjectInspector(type);
+        if (type instanceof ArrayType) {
+            return getStandardListObjectInspector(getRowColumnInspector(((ArrayType) type).getElementType()));
+        }
+
+        if (type instanceof MapType) {
+            return getStandardMapObjectInspector(
+                    getRowColumnInspector(((MapType) type).getKeyType()),
+                    getRowColumnInspector(((MapType) type).getValueType()));
+        }
+
+        if (type instanceof RowType) {
+            List<RowType.Field> fields = ((RowType) type).getFields();
+            return getStandardStructObjectInspector(
+                    IntStream.range(0, fields.size())
+                            .mapToObj(i -> fields.get(i).getName().orElse("field" + i))
+                            .collect(toList()),
+                    type.getTypeParameters().stream()
+                            .map(HiveWriteUtils::getRowColumnInspector)
+                            .collect(toList()));
         }
 
         throw new IllegalArgumentException("unsupported type: " + type);
