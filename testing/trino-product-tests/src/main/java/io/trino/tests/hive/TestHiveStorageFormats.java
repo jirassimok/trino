@@ -478,8 +478,9 @@ public class TestHiveStorageFormats
     {
         String tableName = createSimpleTimestampTable("timestamps_from_hive", storageFormat);
 
-        // insert records one by one so that we have one file per record, which allows us to exercise predicate push-down in Parquet
-        // (which only works when the value range has a min = max)
+        // insert records one by one so that we have one file per record, which
+        // allows us to exercise predicate push-down in Parquet (which only
+        // works when the value range has a min = max)
         for (TimestampAndPrecision entry : TIMESTAMPS_FROM_HIVE) {
             onHive().executeQuery(format("INSERT INTO %s VALUES (%s, '%s')", tableName, entry.getId(), entry.getWriteValue()));
         }
@@ -493,11 +494,12 @@ public class TestHiveStorageFormats
     {
         String tableName = createSimpleTimestampTable("timestamps_from_trino", storageFormat);
 
+        // insert records one by one so that we have one file per record, which
+        // allows us to exercise predicate push-down in Parquet (which only
+        // works when the value range has a min = max)
         for (TimestampAndPrecision entry : TIMESTAMPS_FROM_TRINO) {
             setTimestampPrecision(entry.getPrecision());
-            // insert records one by one so that we have one file per record, which allows us to exercise predicate push-down in Parquet
-            // (which only works when the value range has a min = max)
-            onPresto().executeQuery(format("INSERT INTO %s VALUES (%s, TIMESTAMP'%s')", tableName, entry.getId(), entry.getWriteValue()));
+            onPresto().executeQuery(format("INSERT INTO %s VALUES (%s, TIMESTAMP '%s')", tableName, entry.getId(), entry.getWriteValue()));
         }
 
         assertSimpleTimestamps(tableName, TIMESTAMPS_FROM_TRINO);
@@ -539,7 +541,8 @@ public class TestHiveStorageFormats
         ensureDummyExists();
         String tableName = createStructTimestampTable("test_struct_timestamp_precision", format);
 
-        // Insert in a loop because inserting with UNION ALL sometimes makes values invisible to Trino
+        // Insert one at a time because inserting with UNION ALL sometimes makes
+        // data invisible to Trino (see https://github.com/trinodb/trino/issues/6485)
         for (TimestampAndPrecision entry : TIMESTAMPS_FROM_HIVE) {
             onHive().executeQuery(format(
                     "INSERT INTO %1$s"
