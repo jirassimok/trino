@@ -568,6 +568,10 @@ public class TestHiveStorageFormats
 
     private String createStructTimestampTable(String tableNamePrefix, StorageFormat format)
     {
+        // only admin user is allowed to change session properties
+        setAdminRole(onPresto().getConnection());
+        setSessionProperties(onPresto().getConnection(), format);
+
         String formatName = format.getName().toLowerCase(Locale.ENGLISH);
         String tableName = format("%s_%s_%s", tableNamePrefix, formatName, randomTableSuffix());
         onPresto().executeQuery(format(
