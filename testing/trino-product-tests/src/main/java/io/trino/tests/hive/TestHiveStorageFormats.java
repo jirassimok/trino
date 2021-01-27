@@ -506,34 +506,6 @@ public class TestHiveStorageFormats
         onPresto().executeQuery("DROP TABLE " + tableName);
     }
 
-    private String createSimpleTimestampTable(String tableNamePrefix, StorageFormat format)
-    {
-        return createTestTable(tableNamePrefix, format, "(id BIGINT, ts TIMESTAMP)");
-    }
-
-    /**
-     * Assertions for tables created by {@link #createSimpleTimestampTable(String, StorageFormat)}
-     */
-    private static void assertSimpleTimestamps(String tableName, List<TimestampAndPrecision> data)
-    {
-        SoftAssertions softly = new SoftAssertions();
-        for (TimestampAndPrecision entry : data) {
-            for (HiveTimestampPrecision precision : HiveTimestampPrecision.values()) {
-                setTimestampPrecision(precision);
-                // Assert also with `CAST AS varchar` on the server side to avoid any JDBC-related issues
-                softly.check(() -> assertThat(onPresto().executeQuery(
-                        format("SELECT id, typeof(ts), CAST(ts AS varchar), ts FROM %s WHERE id = %s", tableName, entry.getId())))
-                        .as("timestamp(%d)", precision.getPrecision())
-                        .containsOnly(row(
-                                entry.getId(),
-                                entry.getReadType(precision),
-                                entry.getReadValue(precision),
-                                Timestamp.valueOf(entry.getReadValue(precision)))));
-            }
-        }
-        softly.assertAll();
-    }
-
     @Test(dataProvider = "storageFormatsWithNanosecondPrecision", groups = STORAGE_FORMATS)
     public void testStructTimestamps(StorageFormat format)
     {
@@ -562,6 +534,34 @@ public class TestHiveStorageFormats
 
         assertStructTimestamps(tableName, TIMESTAMPS_FROM_HIVE);
         onHive().executeQuery(format("DROP TABLE %s", tableName));
+    }
+
+    private String createSimpleTimestampTable(String tableNamePrefix, StorageFormat format)
+    {
+        return createTestTable(tableNamePrefix, format, "(id BIGINT, ts TIMESTAMP)");
+    }
+
+    /**
+     * Assertions for tables created by {@link #createSimpleTimestampTable(String, StorageFormat)}
+     */
+    private static void assertSimpleTimestamps(String tableName, List<TimestampAndPrecision> data)
+    {
+        SoftAssertions softly = new SoftAssertions();
+        for (TimestampAndPrecision entry : data) {
+            for (HiveTimestampPrecision precision : HiveTimestampPrecision.values()) {
+                setTimestampPrecision(precision);
+                // Assert also with `CAST AS varchar` on the server side to avoid any JDBC-related issues
+                softly.check(() -> assertThat(onPresto().executeQuery(
+                        format("SELECT id, typeof(ts), CAST(ts AS varchar), ts FROM %s WHERE id = %s", tableName, entry.getId())))
+                        .as("timestamp(%d)", precision.getPrecision())
+                        .containsOnly(row(
+                                entry.getId(),
+                                entry.getReadType(precision),
+                                entry.getReadValue(precision),
+                                Timestamp.valueOf(entry.getReadValue(precision)))));
+            }
+        }
+        softly.assertAll();
     }
 
     private String createStructTimestampTable(String tableNamePrefix, StorageFormat format)
