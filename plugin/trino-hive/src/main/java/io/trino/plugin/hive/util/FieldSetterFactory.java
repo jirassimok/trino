@@ -47,7 +47,6 @@ import org.apache.hadoop.io.FloatWritable;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
-import org.joda.time.DateTimeZone;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -66,9 +65,7 @@ import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
-import static io.trino.spi.type.Timestamps.MICROSECONDS_PER_MILLISECOND;
 import static io.trino.spi.type.Timestamps.MICROSECONDS_PER_SECOND;
-import static io.trino.spi.type.Timestamps.MILLISECONDS_PER_SECOND;
 import static io.trino.spi.type.Timestamps.NANOSECONDS_PER_MICROSECOND;
 import static io.trino.spi.type.Timestamps.PICOSECONDS_PER_NANOSECOND;
 import static io.trino.spi.type.TinyintType.TINYINT;
@@ -81,20 +78,8 @@ import static java.util.Collections.unmodifiableList;
 import static java.util.Collections.unmodifiableMap;
 import static java.util.Objects.requireNonNull;
 
-public final class FieldSetterFactory
+public class FieldSetterFactory
 {
-    private final DateTimeZone timeZone;
-
-    public FieldSetterFactory()
-    {
-        this(DateTimeZone.UTC);
-    }
-
-    public FieldSetterFactory(DateTimeZone timeZone)
-    {
-        this.timeZone = requireNonNull(timeZone, "timeZone is null");
-    }
-
     public FieldSetter create(SettableStructObjectInspector rowInspector, Object row, StructField field, Type type)
     {
         if (BOOLEAN.equals(type)) {
@@ -155,7 +140,7 @@ public final class FieldSetterFactory
         protected final Object row;
         protected final StructField field;
 
-        private FieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
+        protected FieldSetter(SettableStructObjectInspector rowInspector, Object row, StructField field)
         {
             this.rowInspector = requireNonNull(rowInspector, "rowInspector is null");
             this.row = requireNonNull(row, "row is null");
@@ -368,7 +353,7 @@ public final class FieldSetterFactory
         }
     }
 
-    private class TimestampFieldSetter
+    private static class TimestampFieldSetter
             extends FieldSetter
     {
         private final TimestampType type;
@@ -587,7 +572,7 @@ public final class FieldSetterFactory
         return HiveDecimal.create(unscaledValue, decimalType.getScale());
     }
 
-    private Timestamp getHiveTimestamp(TimestampType type, Block block, int position)
+    private static Timestamp getHiveTimestamp(TimestampType type, Block block, int position)
     {
         verify(type.getPrecision() <= HiveTimestampPrecision.MAX.getPrecision(), "Timestamp precision too high for Hive");
 
@@ -602,20 +587,9 @@ public final class FieldSetterFactory
             epochMicro = timestamp.getEpochMicros();
             nanoOfMicro = timestamp.getPicosOfMicro() / PICOSECONDS_PER_NANOSECOND;
         }
-
-        long epochSecond;
-        if (DateTimeZone.UTC.equals(timeZone)) {
-            epochSecond = floorDiv(epochMicro, MICROSECONDS_PER_SECOND);
-        }
-        else {
-            long localEpochMilli = floorDiv(epochMicro, MICROSECONDS_PER_MILLISECOND);
-            long utcEpochMilli = timeZone.convertLocalToUTC(localEpochMilli, false);
-            epochSecond = floorDiv(utcEpochMilli, MILLISECONDS_PER_SECOND);
-        }
-
+        long epochSecond = floorDiv(epochMicro, MICROSECONDS_PER_SECOND);
         int microOfSecond = floorMod(epochMicro, MICROSECONDS_PER_SECOND);
         int nanoOfSecond = microOfSecond * NANOSECONDS_PER_MICROSECOND + nanoOfMicro;
-
         return Timestamp.ofEpochSecond(epochSecond, nanoOfSecond);
     }
 }

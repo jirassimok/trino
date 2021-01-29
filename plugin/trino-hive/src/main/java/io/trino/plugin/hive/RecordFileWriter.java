@@ -16,6 +16,7 @@ package io.trino.plugin.hive;
 import com.google.common.collect.ImmutableList;
 import io.airlift.units.DataSize;
 import io.trino.plugin.hive.metastore.StorageFormat;
+import io.trino.plugin.hive.parquet.ParquetFieldSetterFactory;
 import io.trino.plugin.hive.parquet.ParquetRecordWriter;
 import io.trino.plugin.hive.util.FieldSetterFactory;
 import io.trino.plugin.hive.util.FieldSetterFactory.FieldSetter;
@@ -110,8 +111,9 @@ public class RecordFileWriter
 
         row = tableInspector.create();
 
-        DateTimeZone timeZone = (recordWriter instanceof ParquetRecordWriter) ? parquetTimeZone : DateTimeZone.UTC;
-        FieldSetterFactory fieldSetterFactory = new FieldSetterFactory(timeZone);
+        FieldSetterFactory fieldSetterFactory = (recordWriter instanceof ParquetRecordWriter)
+                ? new ParquetFieldSetterFactory(parquetTimeZone)
+                : new FieldSetterFactory();
 
         setters = new FieldSetter[structFields.size()];
         for (int i = 0; i < setters.length; i++) {
