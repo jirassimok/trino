@@ -237,7 +237,7 @@ public class DockerContainer
         }
     }
 
-    public String execCommand(String... command)
+    private String execCommand(String... command)
     {
         // Quote the parts of the command with '' to avoid confusion if there are spaces in any argument
         String commandText = "'" + String.join("' '", command) + "'";
