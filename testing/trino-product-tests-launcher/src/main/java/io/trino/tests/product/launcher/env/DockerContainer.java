@@ -239,12 +239,14 @@ public class DockerContainer
 
     public String execCommand(String... command)
     {
-        String fullCommand = Joiner.on(" ").join(command);
+        // Quote the parts of the command with '' to avoid confusion if there are spaces in any argument
+        String commandText = "'" + String.join("' '", command) + "'";
+
         if (!isRunning()) {
-            throw new RuntimeException(format("Could not execute command '%s' in stopped container %s", fullCommand, logicalName));
+            throw new RuntimeException(format("Can not execute command in stopped container %s: %s", logicalName, commandText));
         }
 
-        log.info("Executing command '%s' in container %s", fullCommand, logicalName);
+        log.info("Executing command in container %s: %s", logicalName, commandText);
 
         try {
             ExecResult result = (ExecResult) executor.getAsync(() -> execInContainer(command)).get();
@@ -252,7 +254,7 @@ public class DockerContainer
                 return result.getStdout();
             }
 
-            throw new RuntimeException(format("Could not execute command '%s' in container %s: %s", fullCommand, logicalName, result.getStderr()));
+            throw new RuntimeException(format("Command (%s) failed in container %s. stderr was: %s", logicalName, commandText, result.getStderr()));
         }
         catch (InterruptedException e) {
             Thread.currentThread().interrupt();
