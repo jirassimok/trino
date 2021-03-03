@@ -61,6 +61,7 @@ import static java.nio.file.Files.size;
 import static java.time.Duration.ofSeconds;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.stream.Collectors.joining;
 import static org.testcontainers.utility.MountableFile.forHostPath;
 
 public class DockerContainer
@@ -87,6 +88,8 @@ public class DockerContainer
     private List<String> logPaths = new ArrayList<>();
     private Optional<EnvironmentListener> listener = Optional.empty();
     private boolean temporary;
+
+    private final List<List<String>> postStartCommands = new ArrayList<>();
 
     public DockerContainer(String dockerImageName, String logicalName)
     {
@@ -159,6 +162,12 @@ public class DockerContainer
 
         return withCopyFileToContainer(forHostPath(healthCheckScript), "/usr/local/bin/health.sh")
                 .withCreateContainerCmdModifier(command -> command.withHealthcheck(cmd));
+    }
+
+    public final DockerContainer withPostStartCommand(String... command)
+    {
+        postStartCommands.add(List.of(command));
+        return this;
     }
 
     /**
@@ -438,6 +447,24 @@ public class DockerContainer
         }
 
         checkState(!isRunning(), "Container %s is still running", logicalName);
+    }
+
+    @Override
+    protected void doStart()
+    {
+        super.doStart();
+        for (List<String> command : postStartCommands) {
+            try {
+                execInContainer(command.toArray(String[]::new));
+            }
+            catch (InterruptedException | IOException e) {
+                // TODO: Shut down the container, probably?
+                throw new RuntimeException(format(
+                        "Error executing command in container %s: %s",
+                        getLogicalName(),
+                        command.stream().map(s -> s.replace("'", "'\\''")).collect(joining("' '"))));
+            }
+        }
     }
 
     public boolean isTemporary()
