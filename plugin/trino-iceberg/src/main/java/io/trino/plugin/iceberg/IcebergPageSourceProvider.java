@@ -472,7 +472,7 @@ public class IcebergPageSourceProvider
             for (BlockMetaData block : parquetMetadata.getBlocks()) {
                 long firstDataPage = block.getColumns().get(0).getFirstDataPageOffset();
                 if ((firstDataPage >= start) && (firstDataPage < (start + length)) &&
-                        predicateMatches(parquetPredicate, block, dataSource, descriptorsByPath, parquetTupleDomain)) {
+                        predicateMatches(parquetPredicate, block, dataSource, descriptorsByPath, parquetTupleDomain, null, false)) {
                     blocks.add(block);
                 }
             }
@@ -485,7 +485,10 @@ public class IcebergPageSourceProvider
                     dataSource,
                     UTC,
                     systemMemoryContext,
-                    options);
+                    options,
+                    null,
+                    null,
+                    false);
 
             ImmutableList.Builder<Type> trinoTypes = ImmutableList.builder();
             ImmutableList.Builder<Optional<Field>> internalFields = ImmutableList.builder();
